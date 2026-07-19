@@ -1,0 +1,5 @@
+description: Base system packages and configuration
+packages:
+  - tmux
+services:
+  - bootc-fetch-apply-updates.timer

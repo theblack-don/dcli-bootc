@@ -1,0 +1,30 @@
+[package]
+name = "dcli-bootc"
+version = "0.1.0"
+edition = "2021"
+authors = ["Don"]
+description = "A declarative bootc image configuration manager"
+license = "0BSD"
+
+[[bin]]
+name = "dcli-bootc"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive", "cargo"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+serde_json = "1.0"
+anyhow = "1.0"
+colored = "2.1"
+indicatif = "0.17"
+dirs = "5.0"
+chrono = { version = "0.4", features = ["serde"] }
+toml = "0.8"
+walkdir = "2.5"
+
+[profile.release]
+opt-level = 3
+lto = false
+codegen-units = 1
+strip = true
