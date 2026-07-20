@@ -1,6 +1,8 @@
+mod bootc;
 mod commands;
 mod config;
 mod generator;
+mod hash;
 mod module;
 mod project;
 
@@ -59,12 +61,35 @@ enum Commands {
         /// Skip confirmation for bootc switch
         #[arg(short, long)]
         force: bool,
+
+        /// Disable podman layer caching for this build
+        #[arg(long)]
+        no_cache: bool,
     },
 
-    /// Update the base image tag and rebase
+    /// Switch the bootc deployment to the locally built image
+    Switch {
+        /// Tag of the locally built image
+        #[arg(short, long)]
+        tag: Option<String>,
+
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+
+        /// Automatically reboot after switching
+        #[arg(long)]
+        reboot: bool,
+    },
+
+    /// Pull the latest base image, rebuild, and switch to the fresh build
     Update {
         /// Target tag (e.g. "stable", "latest")
         tag: Option<String>,
+
+        /// Use NVIDIA base image variant
+        #[arg(long)]
+        nvidia: bool,
 
         /// Skip confirmation
         #[arg(short, long)]
@@ -98,11 +123,24 @@ fn main() -> Result<()> {
                     nvidia,
                     reboot,
                     force,
+                    no_cache,
                 } => {
-                    commands::build::run(&project_path, tag, nvidia, reboot, force)?;
+                    commands::build::run(&project_path, tag, nvidia, reboot, force, no_cache)?;
                 }
-                Commands::Update { tag, force, reboot } => {
-                    commands::update::run(&project_path, tag, force, reboot)?;
+                Commands::Switch {
+                    tag,
+                    force,
+                    reboot,
+                } => {
+                    commands::switch::run(&project_path, tag, force, reboot)?;
+                }
+                Commands::Update {
+                    tag,
+                    nvidia,
+                    force,
+                    reboot,
+                } => {
+                    commands::update::run(&project_path, tag, force, reboot, nvidia)?;
                 }
                 Commands::Status => {
                     commands::status::run(&project_path)?;

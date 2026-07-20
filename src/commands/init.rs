@@ -71,9 +71,14 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     // Write base module
     let base_module = Module {
         description: "Base system packages and configuration".to_string(),
-        packages: vec!["tmux".to_string()],
+        // dcli-bootc itself, so the tool persists in the image across
+        // rebuilds (host-installed packages are lost on rebase).
+        packages: vec!["tmux".to_string(), "dcli-bootc".to_string()],
         remove: vec![],
-        repos: RepoConfig::default(),
+        repos: RepoConfig {
+            copr: vec!["theblackdon/dcli-bootc".to_string()],
+            ..RepoConfig::default()
+        },
         remote_rpms: vec![],
         files: vec![],
         services: vec!["bootc-fetch-apply-updates.timer".to_string()],

@@ -22,6 +22,7 @@ dirs = "5.0"
 chrono = { version = "0.4", features = ["serde"] }
 toml = "0.8"
 walkdir = "2.5"
+sha2 = "0.10"
 
 [profile.release]
 opt-level = 3

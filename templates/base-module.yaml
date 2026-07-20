@@ -1,5 +1,10 @@
 description: Base system packages and configuration
 packages:
   - tmux
+  # dcli-bootc itself, so it persists in the image across rebuilds
+  - dcli-bootc
+repos:
+  copr:
+    - theblackdon/dcli-bootc
 services:
   - bootc-fetch-apply-updates.timer

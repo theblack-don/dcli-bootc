@@ -1,27 +1,14 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
+use colored::*;
 use std::path::Path;
 
+use crate::bootc;
 use crate::config;
 use crate::project;
 
 pub fn run(project_dir: &Path) -> Result<()> {
     let profile = config::load_profile(project_dir)?;
     let name = project::get_project_name(project_dir)?;
-
-    // Parse bootc status
-    let bootc_output = std::process::Command::new("sudo")
-        .arg("bootc")
-        .arg("status")
-        .arg("--json")
-        .output()
-        .context("Failed to run 'bootc status'")?;
-
-    let bootc_json: serde_json::Value = if bootc_output.status.success() {
-        let stdout = String::from_utf8_lossy(&bootc_output.stdout);
-        serde_json::from_str(&stdout).unwrap_or(serde_json::Value::Null)
-    } else {
-        serde_json::Value::Null
-    };
 
     // Display project info
     println!("{} Project: {}", "📦".cyan(), name);
@@ -36,57 +23,59 @@ pub fn run(project_dir: &Path) -> Result<()> {
         profile.enabled_modules.join(", ")
     );
     println!("  Default tag: {}", profile.default_tag);
+
+    // Local build state
+    let image_ref = format!("localhost/{}:{}", name, profile.default_tag);
+    match bootc::local_image_digest(&image_ref) {
+        Some(digest) => println!("  Local image: {} ({})", image_ref, bootc::short_digest(&digest)),
+        None => println!("  Local image: {} (not built yet)", image_ref),
+    }
     println!();
 
     // Display bootc status
     println!("{} Bootc Status:", "🖥".cyan());
+    match bootc::status() {
+        Ok(status) => {
+            match (&status.tracked_transport, &status.tracked_image) {
+                (Some(transport), Some(image)) => {
+                    println!("  Tracking: {}:{}", transport, image)
+                }
+                (None, Some(image)) => println!("  Tracking: {}", image),
+                _ => println!("  Tracking: (no image source)"),
+            }
 
-    if bootc_json.is_object() {
-        if let Some(booted) = bootc_json.get("booted") {
-            if let Some(image) = booted.get("image") {
-                let image_str = image.as_str().unwrap_or("unknown");
-                println!("  Booted image: {}", image_str);
-            }
-        }
-        if let Some(staged) = bootc_json.get("staged") {
-            if let Some(image) = staged.get("image") {
-                if let Some(image_str) = image.as_str() {
-                    if !image_str.is_empty() {
-                        println!("  Staged (next boot): {}", image_str);
+            match &status.booted_image {
+                Some(image) => {
+                    print!("  Booted:   {}", image);
+                    if let Some(d) = &status.booted_digest {
+                        print!(" ({})", bootc::short_digest(d));
                     }
+                    println!();
                 }
+                None => println!("  Booted:   (not a bootc system?)"),
             }
-        }
-        if let Some(rollback) = bootc_json.get("rollback") {
-            if let Some(image) = rollback.get("image") {
-                if let Some(image_str) = image.as_str() {
-                    if !image_str.is_empty() {
-                        println!("  Rollback image: {}", image_str);
+
+            match &status.staged_image {
+                Some(image) => {
+                    print!("  Staged:   {}", image);
+                    if let Some(d) = &status.staged_digest {
+                        print!(" ({})", bootc::short_digest(d));
                     }
+                    println!();
+                    println!(
+                        "  {} Staged deployment will apply on next boot.",
+                        "➜".yellow()
+                    );
                 }
+                None => println!("  Staged:   (none)"),
+            }
+
+            if let Some(image) = &status.rollback_image {
+                println!("  Rollback: {}", image);
             }
         }
-        if let Some(status) = bootc_json.get("status") {
-            if let Some(s) = status.as_str() {
-                println!("  Status: {}", s);
-            }
-        }
-    } else {
-        // Fallback: run bootc status without JSON
-        let plain = std::process::Command::new("sudo")
-            .arg("bootc")
-            .arg("status")
-            .output()
-            .context("Failed to run bootc status")?;
-        let stdout = String::from_utf8_lossy(&plain.stdout);
-        for line in stdout.lines() {
-            println!("  {}", line);
-        }
-        let stderr = String::from_utf8_lossy(&plain.stderr);
-        for line in stderr.lines() {
-            if !line.trim().is_empty() {
-                println!("  {}", line);
-            }
+        Err(e) => {
+            println!("  {} Could not read bootc status: {}", "✗".red(), e);
         }
     }
 
@@ -97,7 +86,7 @@ pub fn run(project_dir: &Path) -> Result<()> {
         println!("{} Available modules:", "📋".cyan());
         for mod_name in &available {
             let enabled = profile.enabled_modules.contains(mod_name);
-            let status = if enabled { "✓".green() } else { " ".dimmed() };
+            let mark = if enabled { "✓".green() } else { " ".dimmed() };
             let mod_path = project_dir.join("modules").join(format!("{}.yaml", mod_name));
             let desc = if mod_path.exists() {
                 if let Ok(m) = config::load_module(project_dir, mod_name) {
@@ -109,14 +98,12 @@ pub fn run(project_dir: &Path) -> Result<()> {
                 String::new()
             };
             if !desc.is_empty() {
-                println!("  {} {} — {}", status, mod_name.cyan(), desc);
+                println!("  {} {} — {}", mark, mod_name.cyan(), desc);
             } else {
-                println!("  {} {}", status, mod_name.cyan());
+                println!("  {} {}", mark, mod_name.cyan());
             }
         }
     }
 
     Ok(())
 }
-
-use colored::*;
