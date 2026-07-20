@@ -5,10 +5,8 @@ Summary:        Declarative bootc image configuration manager
 
 License:        0BSD
 URL:            https://gitlab.com/theblackdon/dcli-bootc
-# Sources are produced by `make srpm` (git archive + cargo vendor).
+# Produced by `make -f .copr/Makefile srpm` (git archive of HEAD).
 Source0:        %{name}-%{version}.tar.gz
-Source1:        %{name}-%{version}-vendor.tar.gz
-Source2:        cargo-config.toml
 
 BuildRequires:  cargo
 BuildRequires:  rust
@@ -22,12 +20,12 @@ repos, files, services, and scripts in YAML modules, then generate a
 Containerfile, build the image, and switch the bootc deployment.
 
 %prep
-%autosetup -a1 -n %{name}-%{version}
-mkdir -p .cargo
-cp %{SOURCE2} .cargo/config.toml
+%autosetup -n %{name}-%{version}
 
 %build
-cargo build --release --offline
+# Downloads crates from crates.io — the COPR project must have
+# "Enable network during builds" turned on.
+cargo build --release
 
 %install
 install -Dm0755 target/release/%{name} %{buildroot}%{_bindir}/%{name}

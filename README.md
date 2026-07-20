@@ -115,16 +115,17 @@ packages do not survive switching to a rebuilt image. Projects created with
 
 ## Packaging
 
-`dcli-bootc.spec` plus the `Makefile` produce a COPR-ready SRPM. Rust
-dependencies are vendored into the SRPM, so the RPM build itself runs fully
-offline (as COPR requires):
+`dcli-bootc.spec` plus `.copr/Makefile` produce a COPR-ready SRPM
+(`make srpm` locally, or COPR's **make srpm** SCM method automatically):
 
 ```bash
 make srpm        # writes dist/dcli-bootc-<version>-1.src.rpm
 ```
 
-`make srpm` archives the sources from `git HEAD`, so commit (and push) before
-building for release. COPR package settings: SCM source
+The SRPM step only archives `git HEAD` (commit and push before building for
+release). Crates are downloaded from crates.io during the RPM build, so the
+COPR project needs **"Enable network during builds"** turned on in its
+settings. COPR package settings: SCM source
 `https://gitlab.com/theblackdon/dcli-bootc.git`, build method **make srpm**,
 spec path `dcli-bootc.spec`.
 
