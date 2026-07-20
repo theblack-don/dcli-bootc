@@ -1,8 +1,7 @@
 # COPR's "make srpm" SCM build method invokes this file as:
 #   make -f .copr/Makefile srpm outdir=<dir> spec=<path-to-spec>
-# The source-build chroot provides git/tar/rpm-build but no Rust toolchain,
-# so this only archives the sources. Crates are fetched from crates.io during
-# the binary build (requires network: enable it in the COPR project settings).
+# inside a minimal chroot that has tar/gzip/rpm-build but NO git binary,
+# so the tarball is produced with plain tar over the checked-out tree.
 #
 # Local use (from the repo root):  make srpm
 
@@ -15,7 +14,10 @@ spec    ?= $(NAME).spec
 srpm:
 	@set -euo pipefail; \
 	tmp=$$(mktemp -d); \
-	git archive --worktree-attributes --format=tar.gz --prefix=$(NAME)-$(VERSION)/ -o $$tmp/$(NAME)-$(VERSION).tar.gz HEAD; \
+	tar --exclude-vcs \
+		--exclude='./target' --exclude='./dist' \
+		--transform 's|^\.|$(NAME)-$(VERSION)|' \
+		-czf $$tmp/$(NAME)-$(VERSION).tar.gz -C $(CURDIR) .; \
 	mkdir -p $(outdir) $$tmp/build; \
 	rpmbuild -bs $(spec) \
 		--define "_sourcedir $$tmp" \

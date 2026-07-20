@@ -122,8 +122,8 @@ packages do not survive switching to a rebuilt image. Projects created with
 make srpm        # writes dist/dcli-bootc-<version>-1.src.rpm
 ```
 
-The SRPM step only archives `git HEAD` (commit and push before building for
-release). Crates are downloaded from crates.io during the RPM build, so the
+The SRPM step archives the checked-out tree (on COPR: the pushed revision —
+commit and push before building for release). Crates are downloaded from crates.io during the RPM build, so the
 COPR project needs **"Enable network during builds"** turned on in its
 settings. COPR package settings: SCM source
 `https://gitlab.com/theblackdon/dcli-bootc.git`, build method **make srpm**,
