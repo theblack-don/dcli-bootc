@@ -104,14 +104,48 @@ dcli-bootc update --reboot   # Same, then reboot
 
 ## Installing from COPR
 
-```bash
-sudo dnf copr enable theblackdon/dcli-bootc
-sudo dnf install dcli-bootc
+### Atomic / bootc distros (Bazzite, Silverblue, Kinoite, Bluefin, Aurora)
+
+`dnf install` does not work on the live host (`/usr` is read-only), and
+binaries copied to `/usr/local/bin` sit outside the image lifecycle. Pick
+one of these instead:
+
+**Option 1 — bake it into your image (recommended).** Projects created with
+`dcli-bootc init` do this automatically via the generated `base.yaml`. For an
+existing project, add the repo and package to any enabled module:
+
+```yaml
+packages:
+  - dcli-bootc
+repos:
+  copr:
+    - theblackdon/dcli-bootc
 ```
 
-On bootc hosts, prefer baking it into your image instead — host-installed
-packages do not survive switching to a rebuilt image. Projects created with
-`dcli-bootc init` do this automatically via the generated `base.yaml`.
+Then `dcli-bootc build` and reboot. The tool now lives inside the image:
+it survives every rebuild/rebase and stays current with each
+`dcli-bootc update`.
+
+**Option 2 — layer it on the running system (rpm-ostree).**
+
+```bash
+sudo curl -sSL -o /etc/yum.repos.d/_copr_theblackdon-dcli-bootc.repo   https://copr.fedorainfracloud.org/coprs/theblackdon/dcli-bootc/repo/fedora-$(rpm -E %fedora)/theblackdon-dcli-bootc-fedora-$(rpm -E %fedora).repo
+sudo rpm-ostree install dcli-bootc
+sudo systemctl reboot
+```
+
+Caveat: layering packages marks deployments `incompatible` in bootc — from
+then on, system mutations (upgrades/switches) must go through `rpm-ostree`
+instead of `bootc`. If you drive your system with `dcli-bootc`, prefer
+Option 1.
+
+**Option 3 — transient install for testing.**
+
+```bash
+sudo bootc usr-overlay
+sudo dnf copr enable theblackdon/dcli-bootc
+sudo dnf install dcli-bootc    # gone after the next reboot
+```
 
 ## Packaging
 

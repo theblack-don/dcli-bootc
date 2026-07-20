@@ -10,7 +10,7 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${CYAN}━━━ dcli-bootc Dev Build ━━━${NC}"
+echo -e "${CYAN}━━━ dcli-bootc Dev Build (RPM pipeline, same as COPR) ━━━${NC}"
 
 # Ensure distrobox is installed
 if ! command -v distrobox &>/dev/null; then
@@ -28,30 +28,49 @@ if ! distrobox list 2>/dev/null | grep -q "$CONTAINER"; then
     --pull --yes \
     --additional-flags "--userns=keep-id"
   distrobox enter "$CONTAINER" -- bash -c \
-    "sudo dnf install -y rust cargo git cmake openssl-devel clang gcc make"
+    "sudo dnf install -y rust cargo git cmake openssl-devel clang gcc make rpm-build"
   echo -e "${GREEN}Builder container created.${NC}"
 else
   echo -e "${GREEN}Using existing builder container '${CONTAINER}'.${NC}"
 fi
 
-# Build inside the container
-echo -e "${CYAN}Building dcli-bootc (release)...${NC}"
+# Make sure rpm-build is available (containers created before it was needed)
 distrobox enter "$CONTAINER" -- bash -c \
-  "cd '${PROJECT}' && cargo build --release 2>&1"
+  'command -v rpmbuild >/dev/null 2>&1 || sudo dnf install -y rpm-build'
 
-# Check build result
-BINARY="$PROJECT/target/release/dcli-bootc"
-if [ -f "$BINARY" ]; then
-  echo -e "${GREEN}✓ Build successful!${NC}"
-  echo -e "  Binary: ${CYAN}$BINARY${NC}"
-  echo -e "  Size:   $(du -h "$BINARY" | cut -f1)"
-  echo ""
-  echo -e "  Test it:"
-  echo -e "    ${YELLOW}$BINARY --help${NC}"
-  echo ""
-  echo -e "  Install locally:"
-  echo -e "    ${YELLOW}sudo cp '$BINARY' /usr/local/bin/dcli-bootc${NC}"
-else
+# Build the binary RPM exactly the way COPR does (dcli-bootc.spec + .copr/Makefile)
+echo -e "${CYAN}Building dcli-bootc RPM (same pipeline as COPR)...${NC}"
+distrobox enter "$CONTAINER" -- bash -c "cd '${PROJECT}' && make rpm"
+
+# Locate the resulting binary RPM
+RPM="$(ls -t "$PROJECT"/dist/dcli-bootc-[0-9]*.x86_64.rpm 2>/dev/null | head -1 || true)"
+if [ -z "$RPM" ]; then
   echo -e "${RED}Build failed. Check the output above for errors.${NC}"
   exit 1
+fi
+
+# Extract the packaged binary — this is the exact binary the COPR pipeline
+# produces, installed to /usr/local/bin (writable on atomic hosts).
+echo -e "${CYAN}Extracting packaged binary...${NC}"
+rm -rf "$PROJECT/dist/install"
+mkdir -p "$PROJECT/dist/install"
+distrobox enter "$CONTAINER" -- bash -c \
+  "cd '${PROJECT}/dist/install' && rpm2cpio '${RPM}' | cpio -idm --quiet"
+PACKAGED="$PROJECT/dist/install/usr/bin/dcli-bootc"
+chmod 0755 "$PACKAGED"
+
+echo -e "${GREEN}✓ RPM build successful!${NC}"
+echo -e "  RPM:    ${CYAN}$RPM${NC}"
+echo -e "  Binary: ${CYAN}$PACKAGED${NC}"
+"$PACKAGED" --version
+sha256sum "$PACKAGED" | cut -d' ' -f1 | sed 's/^/  sha256: /'
+echo ""
+
+read -rp "Install to /usr/local/bin/dcli-bootc? [y/N] " ans || ans=""
+if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
+  sudo cp "$PACKAGED" /usr/local/bin/dcli-bootc
+  echo -e "${GREEN}✓ Installed:${NC} $(command -v dcli-bootc)"
+else
+  echo "  Install later with:"
+  echo -e "    ${YELLOW}sudo cp '$PACKAGED' /usr/local/bin/dcli-bootc${NC}"
 fi
