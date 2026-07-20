@@ -163,6 +163,11 @@ settings. COPR package settings: SCM source
 `https://gitlab.com/theblackdon/dcli-bootc.git`, build method **make srpm**,
 spec path `dcli-bootc.spec`.
 
+For development installs, `./build-dev.sh` builds the same RPM locally and
+offers to install the packaged binary to `~/.local/bin` — this works on
+atomic hosts where `/usr` is read-only. (`./build-dev.sh --system` installs
+to `/usr/local/bin` with sudo for regular Fedora.)
+
 ## License
 
 0BSD

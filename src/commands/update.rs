@@ -14,6 +14,7 @@ pub fn run(
     force: bool,
     auto_reboot: bool,
     nvidia: bool,
+    cache: bool,
 ) -> Result<()> {
     let profile = config::load_profile(project_dir)?;
 
@@ -50,5 +51,5 @@ pub fn run(
     println!();
 
     // ── Rebuild the custom image on the fresh base, then switch ──
-    build::run(project_dir, tag, nvidia, auto_reboot, force, false)
+    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache)
 }

@@ -98,6 +98,10 @@ enum Commands {
         /// Automatically reboot after update
         #[arg(long)]
         reboot: bool,
+
+        /// Use podman layer cache (default: disabled — update always rebuilds fresh)
+        #[arg(long)]
+        cache: bool,
     },
 
     /// Show bootc deployment status and project info
@@ -139,8 +143,9 @@ fn main() -> Result<()> {
                     nvidia,
                     force,
                     reboot,
+                    cache,
                 } => {
-                    commands::update::run(&project_path, tag, force, reboot, nvidia)?;
+                    commands::update::run(&project_path, tag, force, reboot, nvidia, cache)?;
                 }
                 Commands::Status => {
                     commands::status::run(&project_path)?;

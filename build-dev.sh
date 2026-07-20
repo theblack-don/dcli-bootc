@@ -4,6 +4,15 @@ set -euo pipefail
 CONTAINER="dcli-bootc-builder"
 PROJECT="$(cd "$(dirname "$0")" && pwd)"
 
+# Install target: user-local by default (works on atomic hosts where /usr is
+# read-only); pass --system to install to /usr/local/bin with sudo instead.
+INSTALL_DIR="${HOME}/.local/bin"
+USE_SUDO=0
+if [[ "${1:-}" == "--system" ]]; then
+  INSTALL_DIR="/usr/local/bin"
+  USE_SUDO=1
+fi
+
 GREEN='\033[0;32m'
 CYAN='\033[0;36m'
 YELLOW='\033[1;33m'
@@ -66,11 +75,20 @@ echo -e "  Binary: ${CYAN}$PACKAGED${NC}"
 sha256sum "$PACKAGED" | cut -d' ' -f1 | sed 's/^/  sha256: /'
 echo ""
 
-read -rp "Install to /usr/local/bin/dcli-bootc? [y/N] " ans || ans=""
+read -rp "Install to ${INSTALL_DIR}/dcli-bootc? [y/N] " ans < /dev/tty || ans=""
 if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
-  sudo cp "$PACKAGED" /usr/local/bin/dcli-bootc
-  echo -e "${GREEN}✓ Installed:${NC} $(command -v dcli-bootc)"
+  if [[ "$USE_SUDO" == "1" ]]; then
+    sudo cp "$PACKAGED" "${INSTALL_DIR}/dcli-bootc"
+  else
+    mkdir -p "$INSTALL_DIR"
+    cp "$PACKAGED" "${INSTALL_DIR}/dcli-bootc"
+  fi
+  echo -e "${GREEN}✓ Installed:${NC} $(command -v dcli-bootc || echo "${INSTALL_DIR}/dcli-bootc")"
 else
   echo "  Install later with:"
-  echo -e "    ${YELLOW}sudo cp '$PACKAGED' /usr/local/bin/dcli-bootc${NC}"
+  if [[ "$USE_SUDO" == "1" ]]; then
+    echo -e "    ${YELLOW}sudo cp '$PACKAGED' '${INSTALL_DIR}/dcli-bootc'${NC}"
+  else
+    echo -e "    ${YELLOW}cp '$PACKAGED' '${INSTALL_DIR}/dcli-bootc'${NC}"
+  fi
 fi
