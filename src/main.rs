@@ -19,6 +19,10 @@ struct Cli {
     #[arg(short, long, global = true)]
     project: Option<String>,
 
+    /// Host to generate/build for (defaults to auto-detected hostname)
+    #[arg(long, global = true)]
+    host: Option<String>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -122,7 +126,7 @@ fn main() -> Result<()> {
             match cli.command {
                 Commands::Init { .. } => unreachable!(),
                 Commands::Gen { dry_run } => {
-                    commands::gen::run(&project_path, dry_run)?;
+                    commands::gen::run(&project_path, dry_run, cli.host)?;
                 }
                 Commands::Build {
                     tag,
@@ -131,14 +135,23 @@ fn main() -> Result<()> {
                     force,
                     no_cache,
                 } => {
-                    commands::build::run(&project_path, tag, nvidia, reboot, force, no_cache, false)?;
+                    commands::build::run(
+                        &project_path,
+                        tag,
+                        nvidia,
+                        reboot,
+                        force,
+                        no_cache,
+                        false,
+                        cli.host,
+                    )?;
                 }
                 Commands::Switch {
                     tag,
                     force,
                     reboot,
                 } => {
-                    commands::switch::run(&project_path, tag, force, reboot)?;
+                    commands::switch::run(&project_path, tag, force, reboot, cli.host)?;
                 }
                 Commands::Update {
                     tag,
@@ -147,10 +160,10 @@ fn main() -> Result<()> {
                     reboot,
                     cache,
                 } => {
-                    commands::update::run(&project_path, tag, force, reboot, nvidia, cache)?;
+                    commands::update::run(&project_path, tag, force, reboot, nvidia, cache, cli.host)?;
                 }
                 Commands::Status => {
-                    commands::status::run(&project_path)?;
+                    commands::status::run(&project_path, cli.host)?;
                 }
             }
         }

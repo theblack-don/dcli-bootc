@@ -6,9 +6,8 @@ use crate::generator;
 use crate::module;
 use crate::project;
 
-pub fn run(project_dir: &Path, dry_run: bool) -> Result<()> {
-    let profile = config::load_profile(project_dir)
-        .with_context(|| format!("Failed to load profile.yaml from {}", project_dir.display()))?;
+pub fn run(project_dir: &Path, dry_run: bool, host: Option<String>) -> Result<()> {
+    let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
 
     // Validate modules
     let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
@@ -23,7 +22,7 @@ pub fn run(project_dir: &Path, dry_run: bool) -> Result<()> {
     }
 
     // Generate
-    let files = generator::generate(project_dir, &profile)?;
+    let files = generator::generate(project_dir, &profile, active_host.as_deref())?;
 
     if dry_run {
         println!("{} Dry-run: would generate:", "~".cyan());
@@ -61,6 +60,9 @@ pub fn run(project_dir: &Path, dry_run: bool) -> Result<()> {
         "✓".green(),
         name
     );
+    if let Some(h) = &active_host {
+        println!("  Host: {}", h);
+    }
     println!(
         "  {}  ({} lines)",
         project_dir.join("Containerfile").display(),
@@ -77,7 +79,10 @@ pub fn run(project_dir: &Path, dry_run: bool) -> Result<()> {
         modules.iter().map(|m| m.name.clone()).collect::<Vec<_>>().join(", ")
     );
     println!();
-    println!("  Next: run 'dcli-bootc build' to build the image");
+    match &active_host {
+        Some(h) => println!("  Next: run 'dcli-bootc build --host {}' to build the image", h),
+        None => println!("  Next: run 'dcli-bootc build' to build the image"),
+    }
 
     Ok(())
 }

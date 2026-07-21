@@ -28,6 +28,32 @@ fn default_tag() -> String {
     "latest".to_string()
 }
 
+/// Per-host overlay loaded from hosts/<name>.yaml
+///
+/// A host adds modules on top of the profile's `enabled_modules`, can
+/// exclude profile modules, and may override the base images.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostConfig {
+    #[serde(default)]
+    pub description: Option<String>,
+
+    /// Modules to add on top of the profile's enabled_modules
+    #[serde(default)]
+    pub modules: Vec<String>,
+
+    /// Modules to remove from the profile's enabled_modules
+    #[serde(default)]
+    pub exclude_modules: Vec<String>,
+
+    /// Optional base image override for this host
+    #[serde(default)]
+    pub base_image: Option<String>,
+
+    /// Optional NVIDIA base image override for this host
+    #[serde(default)]
+    pub nvidia_base_image: Option<String>,
+}
+
 /// A single module definition loaded from modules/*.yaml
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Module {
@@ -205,4 +231,126 @@ pub fn list_modules(project_dir: &Path) -> Result<Vec<String>> {
     modules.sort();
     modules.dedup();
     Ok(modules)
+}
+
+/// Find a host file in the project's hosts/ directory (.yaml or .yml)
+pub fn host_path(project_dir: &Path, host_name: &str) -> Option<PathBuf> {
+    for ext in ["yaml", "yml"] {
+        let path = project_dir
+            .join("hosts")
+            .join(format!("{}.{}", host_name, ext));
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+/// Load a specific host overlay from the project's hosts/ directory
+pub fn load_host(project_dir: &Path, host_name: &str) -> Result<HostConfig> {
+    let Some(path) = host_path(project_dir, host_name) else {
+        let available = list_hosts(project_dir).unwrap_or_default();
+        if available.is_empty() {
+            anyhow::bail!("Host '{}' not found (no host files in hosts/)", host_name);
+        }
+        anyhow::bail!(
+            "Host '{}' not found in hosts/. Available hosts: {}",
+            host_name,
+            available.join(", ")
+        );
+    };
+
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read host: {}", path.display()))?;
+    let host: HostConfig = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse host: {}", path.display()))?;
+    Ok(host)
+}
+
+/// List all available hosts in the project
+pub fn list_hosts(project_dir: &Path) -> Result<Vec<String>> {
+    let hosts_dir = project_dir.join("hosts");
+    if !hosts_dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut hosts = Vec::new();
+    for entry in std::fs::read_dir(&hosts_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.is_file() {
+            if let Some(ext) = path.extension() {
+                if ext == "yaml" || ext == "yml" {
+                    if let Some(stem) = path.file_stem() {
+                        hosts.push(stem.to_string_lossy().to_string());
+                    }
+                }
+            }
+        }
+    }
+    hosts.sort();
+    hosts.dedup();
+    Ok(hosts)
+}
+
+/// Detect this machine's hostname (Linux, no external deps)
+pub fn detect_hostname() -> Option<String> {
+    std::fs::read_to_string("/proc/sys/kernel/hostname")
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// Resolve the effective profile for a host.
+///
+/// Host selection: explicit `host` argument wins; otherwise the machine
+/// hostname is auto-detected and used if a matching hosts/<hostname>.yaml
+/// exists. With no host, the plain profile is returned unchanged.
+///
+/// The host overlay adds `modules` on top of the profile's enabled_modules
+/// (deduped, order preserved), removes `exclude_modules`, and applies any
+/// base image overrides.
+pub fn resolve_effective_profile(
+    project_dir: &Path,
+    host: Option<&str>,
+) -> Result<(Profile, Option<String>)> {
+    let mut profile = load_profile(project_dir)?;
+
+    let host_name = match host {
+        Some(h) => Some(h.to_string()),
+        None => detect_hostname().filter(|h| host_path(project_dir, h).is_some()),
+    };
+
+    let Some(host_name) = host_name else {
+        return Ok((profile, None));
+    };
+
+    let host_cfg = load_host(project_dir, &host_name)?;
+
+    for ex in &host_cfg.exclude_modules {
+        if !profile.enabled_modules.contains(ex) {
+            eprintln!(
+                "Warning: host '{}' excludes module '{}' which is not in the profile's enabled_modules",
+                host_name, ex
+            );
+        }
+    }
+
+    // Merge: profile modules + host modules (dedup, order preserved) - excludes
+    let mut merged: Vec<String> = Vec::new();
+    for m in profile.enabled_modules.iter().chain(host_cfg.modules.iter()) {
+        if !host_cfg.exclude_modules.contains(m) && !merged.contains(m) {
+            merged.push(m.clone());
+        }
+    }
+    profile.enabled_modules = merged;
+
+    if let Some(base) = host_cfg.base_image {
+        profile.base_image = base;
+    }
+    if let Some(nv) = host_cfg.nvidia_base_image {
+        profile.nvidia_base_image = Some(nv);
+    }
+
+    Ok((profile, Some(host_name)))
 }

@@ -1,0 +1,20 @@
+# Per-host overlay. Copy to hosts/<hostname>.yaml (e.g. hosts/desktop.yaml).
+#
+# The active host is picked by the global `--host <name>` flag, or
+# auto-detected from the machine's hostname when a matching
+# hosts/<hostname>.yaml exists. With no matching host, profile.yaml
+# is used as-is.
+
+description: Gaming desktop
+
+# Modules added on top of profile.yaml's enabled_modules
+modules:
+  - gaming
+  - nvidia
+
+# Modules removed from profile.yaml's enabled_modules (optional)
+exclude_modules: []
+
+# Optional base image overrides for this host
+# base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+# nvidia_base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable

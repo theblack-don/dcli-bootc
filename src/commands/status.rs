@@ -6,8 +6,8 @@ use crate::bootc;
 use crate::config;
 use crate::project;
 
-pub fn run(project_dir: &Path) -> Result<()> {
-    let profile = config::load_profile(project_dir)?;
+pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
+    let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
     let name = project::get_project_name(project_dir)?;
 
     // Display project info
@@ -16,6 +16,10 @@ pub fn run(project_dir: &Path) -> Result<()> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| project_dir.join("profile.yaml").display().to_string());
     println!("  Profile: {}", profile_display);
+    match &active_host {
+        Some(h) => println!("  Host: {} (modules shown are the effective set)", h),
+        None => println!("  Host: none (profile only)"),
+    }
     println!("  Base image: {}", profile.base_image);
     if let Some(nv) = &profile.nvidia_base_image {
         println!("  NVIDIA variant: {}", nv);
@@ -27,8 +31,9 @@ pub fn run(project_dir: &Path) -> Result<()> {
     );
     println!("  Default tag: {}", profile.default_tag);
 
-    // Local build state
-    let image_ref = format!("localhost/{}:{}", name, profile.default_tag);
+    // Local build state — a host build is tagged with the host name
+    let image_tag = active_host.clone().unwrap_or_else(|| profile.default_tag.clone());
+    let image_ref = format!("localhost/{}:{}", name, image_tag);
     match bootc::local_image_digest(&image_ref) {
         Some(digest) => println!("  Local image: {} ({})", image_ref, bootc::short_digest(&digest)),
         None => println!("  Local image: {} (not built yet)", image_ref),
@@ -97,6 +102,37 @@ pub fn run(project_dir: &Path) -> Result<()> {
                 println!("  {} {} — {}", mark, mod_name.cyan(), desc);
             } else {
                 println!("  {} {}", mark, mod_name.cyan());
+            }
+        }
+    }
+
+    // List available hosts
+    let hosts = config::list_hosts(project_dir)?;
+    if !hosts.is_empty() {
+        println!();
+        println!("{} Hosts:", "🖥".cyan());
+        for host_name in &hosts {
+            let is_active = active_host.as_ref() == Some(host_name);
+            let mark = if is_active { "✓".green() } else { " ".dimmed() };
+            let host_cfg = config::load_host(project_dir, host_name).ok();
+            let desc = host_cfg
+                .as_ref()
+                .and_then(|c| c.description.clone())
+                .unwrap_or_default();
+            let mut delta: Vec<String> = Vec::new();
+            if let Some(cfg) = &host_cfg {
+                delta.extend(cfg.modules.iter().map(|m| format!("+{}", m)));
+                delta.extend(cfg.exclude_modules.iter().map(|m| format!("-{}", m)));
+            }
+            let delta_str = if delta.is_empty() {
+                String::new()
+            } else {
+                format!("  [{}]", delta.join(", "))
+            };
+            if desc.is_empty() {
+                println!("  {} {}{}", mark, host_name.cyan(), delta_str);
+            } else {
+                println!("  {} {} — {}{}", mark, host_name.cyan(), desc, delta_str);
             }
         }
     }

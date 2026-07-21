@@ -21,8 +21,9 @@ pub fn run(
     force: bool,
     no_cache: bool,
     skip_freshness_check: bool,
+    host: Option<String>,
 ) -> Result<()> {
-    let profile = config::load_profile(project_dir)?;
+    let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
 
     let base_image = if nvidia {
         profile
@@ -33,12 +34,15 @@ pub fn run(
         &profile.base_image
     };
 
-    let image_tag = tag.unwrap_or_else(|| profile.default_tag.clone());
+    // Explicit --tag wins; otherwise a host build is tagged with the host name
+    let image_tag = tag
+        .or_else(|| active_host.clone())
+        .unwrap_or_else(|| profile.default_tag.clone());
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
 
-    // ── Make sure Containerfile/build.sh match the current modules ──
-    sync_generated(project_dir)?;
+    // ── Make sure Containerfile/build.sh match the current modules + host ──
+    sync_generated(project_dir, &profile, active_host.as_deref())?;
 
     println!(
         "{} Building {} from {}",
@@ -57,6 +61,7 @@ pub fn run(
             nvidia,
             auto_reboot,
             force,
+            active_host.clone(),
         )?
     {
         return Ok(());
@@ -149,6 +154,7 @@ fn handoff_to_update_if_stale(
     nvidia: bool,
     auto_reboot: bool,
     force: bool,
+    host: Option<String>,
 ) -> Result<bool> {
     match registry::check_base_freshness(base_image) {
         Freshness::Fresh => {
@@ -184,6 +190,7 @@ fn handoff_to_update_if_stale(
                     auto_reboot,
                     nvidia,
                     false,
+                    host,
                 )?;
                 return Ok(true);
             }
@@ -195,11 +202,11 @@ fn handoff_to_update_if_stale(
     }
 }
 
-/// Regenerate Containerfile/build.sh when they drift from the modules, so a
-/// build always reflects the current declarative configuration.
-fn sync_generated(project_dir: &Path) -> Result<()> {
-    let profile = config::load_profile(project_dir)?;
-    let generated = generator::generate(project_dir, &profile)?;
+/// Regenerate Containerfile/build.sh when they drift from the modules or the
+/// active host, so a build always reflects the current declarative
+/// configuration.
+fn sync_generated(project_dir: &Path, profile: &config::Profile, host: Option<&str>) -> Result<()> {
+    let generated = generator::generate(project_dir, profile, host)?;
 
     let containerfile_path = project_dir.join("Containerfile");
     let build_sh_path = project_dir.join("build_files").join("build.sh");
@@ -212,7 +219,7 @@ fn sync_generated(project_dir: &Path) -> Result<()> {
     }
 
     println!(
-        "{} Generated files were out of sync with modules — regenerating",
+        "{} Generated files were out of sync with modules/host — regenerating",
         "➜".yellow()
     );
 

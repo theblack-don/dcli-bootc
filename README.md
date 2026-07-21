@@ -36,6 +36,9 @@ my-image/
 ├── modules/            # YAML module definitions
 │   ├── base.yaml
 │   └── ...
+├── hosts/              # Per-host overlays (optional)
+│   ├── desktop.yaml
+│   └── laptop.yaml
 ├── files/              # Files to copy into the image
 ├── rpms/               # Local .rpm files installed via local_rpms
 └── .dcli-bootc         # Project marker
@@ -46,6 +49,48 @@ my-image/
 `profile.yaml` defines the base image and enabled modules. Each module in
 `modules/*.yaml` can declare packages, repos, remote RPMs, local RPMs, files,
 services, and inline scripts.
+
+## Multi-host
+
+One project can build image variants for several machines. `profile.yaml`
+holds the shared configuration; each machine gets an optional overlay in
+`hosts/<name>.yaml` that adds modules on top of the profile's
+`enabled_modules`, can exclude profile modules, and may override the base
+images:
+
+```yaml
+# hosts/desktop.yaml
+description: Gaming desktop
+
+modules:                 # added to the profile's enabled_modules
+  - gaming
+  - nvidia
+
+exclude_modules:         # removed from the profile's list (optional)
+  - tlp
+
+base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable   # optional override
+```
+
+The active host is chosen by the global `--host <name>` flag, or
+auto-detected from the machine's hostname when a matching
+`hosts/<hostname>.yaml` exists (NixOS flake-style). With no match, the plain
+profile is used, so projects without a `hosts/` directory are unaffected.
+
+```bash
+dcli-bootc gen --host desktop      # generate for a specific host
+dcli-bootc build                   # auto-detects host from hostname
+dcli-bootc build --host laptop     # explicit host
+dcli-bootc status                  # shows active host + all hosts
+```
+
+Host builds are tagged with the host name (`localhost/my-image:desktop`),
+so every machine's variant coexists in local container storage; an explicit
+`--tag` always wins. `build` regenerates `Containerfile`/`build.sh` whenever
+they drift from the modules **or the active host**, and the host is recorded
+in the `build.sh` header — so switching hosts always rebuilds the
+customization layer instead of reusing a stale cached one. `switch` and
+`update` understand `--host` too.
 
 ### Local RPMs
 
