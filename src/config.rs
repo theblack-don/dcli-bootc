@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// Top-level profile for a bootc image project
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +44,10 @@ pub struct Module {
 
     #[serde(default)]
     pub remote_rpms: Vec<RemoteRpm>,
+
+    /// Filenames of RPMs shipped in the project's rpms/ directory
+    #[serde(default)]
+    pub local_rpms: Vec<String>,
 
     /// Directories under files/ to rsync into the image
     #[serde(default)]
@@ -127,9 +131,25 @@ pub struct Scripts {
     pub post: Option<String>,
 }
 
+/// Find the profile file in a project directory (.yaml or .yml)
+pub fn profile_path(project_dir: &Path) -> Option<PathBuf> {
+    for name in ["profile.yaml", "profile.yml"] {
+        let path = project_dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+    }
+    None
+}
+
 /// Helper to load a profile from a project directory
 pub fn load_profile(project_dir: &Path) -> Result<Profile> {
-    let path = project_dir.join("profile.yaml");
+    let path = profile_path(project_dir).with_context(|| {
+        format!(
+            "No profile.yaml or profile.yml found in {}",
+            project_dir.display()
+        )
+    })?;
     let content = std::fs::read_to_string(&path)
         .with_context(|| format!("Failed to read profile: {}", path.display()))?;
     let profile: Profile = serde_yaml::from_str(&content)
@@ -137,24 +157,28 @@ pub fn load_profile(project_dir: &Path) -> Result<Profile> {
     Ok(profile)
 }
 
-/// Load a specific module from the project's modules/ directory
-pub fn load_module(project_dir: &Path, module_name: &str) -> Result<Module> {
-    let candidates = [
-        project_dir.join("modules").join(format!("{}.yaml", module_name)),
-        project_dir.join("modules").join(format!("{}.yml", module_name)),
-    ];
-
-    for path in &candidates {
+/// Find a module file in the project's modules/ directory (.yaml or .yml)
+pub fn module_path(project_dir: &Path, module_name: &str) -> Option<PathBuf> {
+    for ext in ["yaml", "yml"] {
+        let path = project_dir
+            .join("modules")
+            .join(format!("{}.{}", module_name, ext));
         if path.exists() {
-            let content = std::fs::read_to_string(path)
-                .with_context(|| format!("Failed to read module: {}", path.display()))?;
-            let module: Module = serde_yaml::from_str(&content)
-                .with_context(|| format!("Failed to parse module: {}", path.display()))?;
-            return Ok(module);
+            return Some(path);
         }
     }
+    None
+}
 
-    anyhow::bail!("Module '{}' not found in modules/", module_name);
+/// Load a specific module from the project's modules/ directory
+pub fn load_module(project_dir: &Path, module_name: &str) -> Result<Module> {
+    let path = module_path(project_dir, module_name)
+        .with_context(|| format!("Module '{}' not found in modules/", module_name))?;
+    let content = std::fs::read_to_string(&path)
+        .with_context(|| format!("Failed to read module: {}", path.display()))?;
+    let module: Module = serde_yaml::from_str(&content)
+        .with_context(|| format!("Failed to parse module: {}", path.display()))?;
+    Ok(module)
 }
 
 /// List all available modules in the project
@@ -179,5 +203,6 @@ pub fn list_modules(project_dir: &Path) -> Result<Vec<String>> {
         }
     }
     modules.sort();
+    modules.dedup();
     Ok(modules)
 }

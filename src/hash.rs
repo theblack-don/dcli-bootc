@@ -7,7 +7,7 @@ use walkdir::WalkDir;
 
 /// Directories whose contents are bind-mounted into the container build and
 /// are therefore invisible to podman's layer cache key.
-const HASHED_DIRS: &[&str] = &["build_files", "files"];
+const HASHED_DIRS: &[&str] = &["build_files", "files", "rpms"];
 
 /// Compute a stable SHA-256 over the contents of every build input directory.
 ///

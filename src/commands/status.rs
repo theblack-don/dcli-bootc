@@ -12,7 +12,10 @@ pub fn run(project_dir: &Path) -> Result<()> {
 
     // Display project info
     println!("{} Project: {}", "📦".cyan(), name);
-    println!("  Profile: {}", project_dir.join("profile.yaml").display());
+    let profile_display = config::profile_path(project_dir)
+        .map(|p| p.display().to_string())
+        .unwrap_or_else(|| project_dir.join("profile.yaml").display().to_string());
+    println!("  Profile: {}", profile_display);
     println!("  Base image: {}", profile.base_image);
     if let Some(nv) = &profile.nvidia_base_image {
         println!("  NVIDIA variant: {}", nv);
@@ -87,16 +90,9 @@ pub fn run(project_dir: &Path) -> Result<()> {
         for mod_name in &available {
             let enabled = profile.enabled_modules.contains(mod_name);
             let mark = if enabled { "✓".green() } else { " ".dimmed() };
-            let mod_path = project_dir.join("modules").join(format!("{}.yaml", mod_name));
-            let desc = if mod_path.exists() {
-                if let Ok(m) = config::load_module(project_dir, mod_name) {
-                    m.description
-                } else {
-                    String::new()
-                }
-            } else {
-                String::new()
-            };
+            let desc = config::load_module(project_dir, mod_name)
+                .map(|m| m.description)
+                .unwrap_or_default();
             if !desc.is_empty() {
                 println!("  {} {} — {}", mark, mod_name.cyan(), desc);
             } else {

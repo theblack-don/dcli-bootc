@@ -127,32 +127,51 @@ pub fn local_image_exists(image_ref: &str) -> bool {
 /// Switch the bootc deployment to a locally built image, then verify and
 /// report exactly what was (or was not) staged.
 ///
+/// When the system already tracks this exact image via containers-storage,
+/// `bootc switch` is a no-op ("Image specification is unchanged") and the
+/// freshly built digest would never be staged — in that case `bootc upgrade`
+/// is run instead, which re-reads the tracked image and queues the new build.
+///
 /// Returns `true` when a genuinely new deployment was staged.
 pub fn switch_to_local(image_ref: &str) -> Result<bool> {
     let before = status().ok();
 
-    println!(
-        "  Running: sudo bootc switch --transport containers-storage {}",
-        image_ref
-    );
+    let already_tracking = before.as_ref().is_some_and(|s| {
+        s.tracked_image.as_deref() == Some(image_ref)
+            && s.tracked_transport.as_deref() == Some("containers-storage")
+    });
+
+    let mut cmd = Command::new("sudo");
+    cmd.arg("bootc");
+    let action = if already_tracking {
+        println!(
+            "  {} already tracks {} — staging the new build via 'bootc upgrade'",
+            "➜".cyan(),
+            image_ref
+        );
+        println!("  Running: sudo bootc upgrade");
+        cmd.arg("upgrade");
+        "upgrade"
+    } else {
+        println!(
+            "  Running: sudo bootc switch --transport containers-storage {}",
+            image_ref
+        );
+        cmd.args(["switch", "--transport", "containers-storage"])
+            .arg(image_ref);
+        "switch"
+    };
     println!();
 
-    let rc = Command::new("sudo")
-        .args([
-            "bootc",
-            "switch",
-            "--transport",
-            "containers-storage",
-            image_ref,
-        ])
+    let rc = cmd
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
         .status()
-        .context("Failed to execute bootc switch")?;
+        .with_context(|| format!("Failed to execute bootc {}", action))?;
 
     if !rc.success() {
-        anyhow::bail!("bootc switch failed");
+        anyhow::bail!("bootc {} failed", action);
     }
 
     println!();

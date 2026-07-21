@@ -4,7 +4,9 @@ mod config;
 mod generator;
 mod hash;
 mod module;
+mod plan;
 mod project;
+mod registry;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -44,7 +46,7 @@ enum Commands {
         dry_run: bool,
     },
 
-    /// Build the container image and optionally switch bootc deployment
+    /// Build the container image (warns when the base image is outdated) and optionally switch bootc deployment
     Build {
         /// Tag for the built image
         #[arg(short, long)]
@@ -129,7 +131,7 @@ fn main() -> Result<()> {
                     force,
                     no_cache,
                 } => {
-                    commands::build::run(&project_path, tag, nvidia, reboot, force, no_cache)?;
+                    commands::build::run(&project_path, tag, nvidia, reboot, force, no_cache, false)?;
                 }
                 Commands::Switch {
                     tag,

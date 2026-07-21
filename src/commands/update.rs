@@ -3,8 +3,12 @@ use colored::*;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
+use crate::bootc;
 use crate::commands::build;
 use crate::config;
+use crate::module;
+use crate::plan;
+use crate::project;
 
 /// Update = pull the latest base image, rebuild the custom image on top of
 /// it, and (after confirmation) switch the deployment to the fresh build.
@@ -30,7 +34,16 @@ pub fn run(
     println!("{} Updating base image {}", "▶".cyan(), base_image);
     println!();
 
+    // ── Show what the rebuild will do before pulling anything ──
+    // (build::run skips its own plan output when invoked from here)
+    let image_tag = tag.clone().unwrap_or_else(|| profile.default_tag.clone());
+    let image_name = project::get_project_name(project_dir)?;
+    let image_ref = format!("localhost/{}:{}", image_name, image_tag);
+    let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
+    plan::print_build_plan(project_dir, &modules, &image_ref, base_image);
+
     // ── Pull the latest base image ──
+    let base_before = bootc::local_image_digest(base_image);
     println!("  Pulling {} ...", base_image);
     let status = Command::new("sudo")
         .arg("podman")
@@ -48,8 +61,18 @@ pub fn run(
     }
 
     println!("{} Pulled {}", "✓".green(), base_image);
+    match (&base_before, &bootc::local_image_digest(base_image)) {
+        (Some(before), Some(after)) if before != after => println!(
+            "  Base image updated: {} → {}",
+            bootc::short_digest(before),
+            bootc::short_digest(after)
+        ),
+        (Some(_), Some(_)) => println!("  {}", "Base image unchanged (already up to date)".dimmed()),
+        _ => {}
+    }
     println!();
 
     // ── Rebuild the custom image on the fresh base, then switch ──
-    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache)
+    // (skip the freshness check — we just pulled the base image)
+    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache, true)
 }

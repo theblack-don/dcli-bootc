@@ -10,7 +10,7 @@ Containerfile and build the image.
 |---------|-------------|
 | `init`  | Initialize a new bootc image project |
 | `gen`   | Generate Containerfile and build script from YAML modules |
-| `build` | Build the container image and optionally switch bootc deployment |
+| `build` | Build the container image (warns when the base image is outdated) and optionally switch bootc deployment |
 | `switch`| Switch the bootc deployment to the locally built image |
 | `update`| Pull the latest base image, rebuild, and switch to the fresh build |
 | `status`| Show bootc deployment status and project info |
@@ -37,14 +37,34 @@ my-image/
 │   ├── base.yaml
 │   └── ...
 ├── files/              # Files to copy into the image
+├── rpms/               # Local .rpm files installed via local_rpms
 └── .dcli-bootc         # Project marker
 ```
 
 ## Configuration
 
 `profile.yaml` defines the base image and enabled modules. Each module in
-`modules/*.yaml` can declare packages, repos, remote RPMs, files, services,
-and inline scripts.
+`modules/*.yaml` can declare packages, repos, remote RPMs, local RPMs, files,
+services, and inline scripts.
+
+### Local RPMs
+
+When a download is slow or unreliable during builds (vendor CDNs, gated
+downloads), fetch the `.rpm` yourself, drop it in the project's `rpms/`
+directory, and declare it by filename in a module:
+
+```yaml
+local_rpms:
+  - Lightworks-2025.2-56356.rpm
+```
+
+`gen` fails fast if a declared file is missing from `rpms/`, instead of the
+build dying halfway through. The files are bind-mounted into the build and
+installed with `dnf install` — they never land in an image layer. Swapping a
+file in `rpms/` invalidates the customization layer via the build-input hash,
+and the post-build verification confirms each local RPM's package is actually
+installed. The `.gitignore` written by `init` already excludes `*.rpm`, so the
+binaries stay out of git.
 
 ## Build
 
@@ -59,6 +79,22 @@ dcli-bootc build --reboot    # Reboot after switching
 if they have drifted from your modules, so a build always reflects the current
 configuration. Package installs run without `--skip-unavailable`, so an
 unavailable package fails the build instead of being silently dropped.
+
+Before any work happens, `build` and `update` print a **build plan**: every
+module's repos, removals, package installs, remote and local RPMs (with their
+real package names and sizes), file overlays, and services — then a comparison
+against the previously built image showing which declared packages are new
+since then, and which declared removals are actually present there. The
+comparison is best-effort: it is skipped when no previous build exists or its
+package list can't be read. `update` prints the plan before pulling and also
+reports whether the pull actually changed the base image.
+
+`build` works on your **local copy** of the base image — it never pulls OS or
+base-image updates itself. Before building, it checks whether the registry has
+a newer base image; when yours is outdated, it warns you and offers to switch
+to `update` (pull the latest base + rebuild fresh) instead. `--force` skips
+the question but still prints the warning. The check is best-effort: it needs
+network access and `skopeo`, and is skipped when either is unavailable.
 
 After building, dcli-bootc boots the image once to verify that every package
 declared in your modules is actually installed (and that every removed
@@ -83,7 +119,10 @@ rebuild.
 Answering `y` at the build's switch prompt runs
 `sudo bootc switch --transport containers-storage localhost/<name>:<tag>`
 and then **verifies** what bootc staged, printing the staged image and digest
-so you can be sure the change actually landed. The new deployment only takes
+so you can be sure the change actually landed. When the system already tracks
+that exact image, `bootc switch` is a no-op ("Image specification is
+unchanged") — dcli-bootc detects this and runs `sudo bootc upgrade` instead,
+which stages the freshly built digest of the tracked image. The new deployment only takes
 effect **after a reboot** — you'll be asked whether to reboot right away
 (`--reboot` skips the question and reboots automatically). If nothing new was
 staged, no reboot is offered.
@@ -101,6 +140,9 @@ dcli-bootc update            # Pull latest base image, rebuild, and switch
 dcli-bootc update --nvidia   # Update using the NVIDIA base image variant
 dcli-bootc update --reboot   # Same, then reboot
 ```
+
+This is the flow `dcli-bootc build` offers to hand off to when it detects that
+your local base image is outdated.
 
 ## Installing from COPR
 

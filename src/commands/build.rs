@@ -4,11 +4,14 @@ use std::path::Path;
 use std::process::{Command, Stdio};
 
 use crate::bootc;
+use crate::commands::update;
 use crate::config;
 use crate::generator;
 use crate::hash;
 use crate::module;
+use crate::plan;
 use crate::project;
+use crate::registry::{self, Freshness};
 
 pub fn run(
     project_dir: &Path,
@@ -17,6 +20,7 @@ pub fn run(
     auto_reboot: bool,
     force: bool,
     no_cache: bool,
+    skip_freshness_check: bool,
 ) -> Result<()> {
     let profile = config::load_profile(project_dir)?;
 
@@ -43,6 +47,28 @@ pub fn run(
         base_image
     );
     println!();
+
+    // ── Warn when the registry has a newer base image ──
+    if !skip_freshness_check
+        && handoff_to_update_if_stale(
+            project_dir,
+            base_image,
+            &image_tag,
+            nvidia,
+            auto_reboot,
+            force,
+        )?
+    {
+        return Ok(());
+    }
+
+    // ── Show what the build will do before doing any work ──
+    // (skipped when called from `update`, which already printed the plan
+    // before pulling the base image)
+    if !skip_freshness_check {
+        let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
+        plan::print_build_plan(project_dir, &modules, &image_ref, base_image);
+    }
 
     // ── Cache-busting content hash of the build inputs ──
     let build_hash = hash::compute_build_hash(project_dir)?;
@@ -112,6 +138,63 @@ pub fn run(
     Ok(())
 }
 
+/// Warn when the local copy of the base image is older than the registry's
+/// and offer to hand off to `update` (pull the latest base + rebuild fresh)
+/// instead. Returns true when the update flow took over and the caller
+/// should stop.
+fn handoff_to_update_if_stale(
+    project_dir: &Path,
+    base_image: &str,
+    image_tag: &str,
+    nvidia: bool,
+    auto_reboot: bool,
+    force: bool,
+) -> Result<bool> {
+    match registry::check_base_freshness(base_image) {
+        Freshness::Fresh => {
+            println!("  {}", "Base image is current".dimmed());
+            println!();
+            Ok(false)
+        }
+        Freshness::Unknown => Ok(false),
+        Freshness::Stale { local, remote } => {
+            println!(
+                "{} A newer base image is available for {}",
+                "!".yellow(),
+                base_image
+            );
+            println!("    local:    {}", bootc::short_digest(&local));
+            println!("    registry: {}", bootc::short_digest(&remote));
+            println!("    This build would use the outdated local copy.");
+            println!();
+
+            if force {
+                println!("  Run 'dcli-bootc update' to rebuild on the latest base.");
+                println!();
+                return Ok(false);
+            }
+
+            if bootc::confirm("Pull the latest base and rebuild fresh (dcli-bootc update) instead?")
+            {
+                println!();
+                update::run(
+                    project_dir,
+                    Some(image_tag.to_string()),
+                    force,
+                    auto_reboot,
+                    nvidia,
+                    false,
+                )?;
+                return Ok(true);
+            }
+
+            println!("  Continuing with the local base image — update later with: dcli-bootc update");
+            println!();
+            Ok(false)
+        }
+    }
+}
+
 /// Regenerate Containerfile/build.sh when they drift from the modules, so a
 /// build always reflects the current declarative configuration.
 fn sync_generated(project_dir: &Path) -> Result<()> {
@@ -156,6 +239,18 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
     for rm in &modules {
         wanted.extend(rm.module.packages.iter().cloned());
         unwanted.extend(rm.module.remove.iter().cloned());
+        // Local RPMs are declared by filename — resolve their real package
+        // names from the RPM headers so they are verified too.
+        for entry in &rm.module.local_rpms {
+            match plan::local_rpm_package_name(project_dir, entry) {
+                Some(name) => wanted.push(name),
+                None => println!(
+                    "  {} Could not read package name from rpms/{} — skipping its verification",
+                    "!".yellow(),
+                    entry
+                ),
+            }
+        }
     }
     if wanted.is_empty() && unwanted.is_empty() {
         return Ok(());

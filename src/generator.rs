@@ -14,7 +14,10 @@ pub struct GeneratedFiles {
 pub fn generate(project_dir: &Path, profile: &Profile) -> Result<GeneratedFiles> {
     let modules = load_enabled_modules(project_dir, &profile.enabled_modules)?;
 
-    let containerfile = generate_containerfile(profile);
+    validate_local_rpms(project_dir, &modules)?;
+
+    let has_local_rpms = modules.iter().any(|rm| !rm.module.local_rpms.is_empty());
+    let containerfile = generate_containerfile(profile, has_local_rpms);
     let build_sh = generate_build_sh(profile, &modules);
 
     Ok(GeneratedFiles {
@@ -23,14 +26,48 @@ pub fn generate(project_dir: &Path, profile: &Profile) -> Result<GeneratedFiles>
     })
 }
 
-fn generate_containerfile(profile: &Profile) -> String {
+/// Ensure every declared local RPM is a plain relative filename and exists in
+/// the project's rpms/ directory — fail at gen time instead of mid-build.
+fn validate_local_rpms(project_dir: &Path, modules: &[ResolvedModule]) -> Result<()> {
+    for rm in modules {
+        for entry in &rm.module.local_rpms {
+            let rel = Path::new(entry);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                anyhow::bail!(
+                    "Module '{}' declares local_rpms entry '{}' — entries must be filenames relative to the project's rpms/ directory",
+                    rm.name,
+                    entry
+                );
+            }
+            let path = project_dir.join("rpms").join(entry);
+            if !path.is_file() {
+                anyhow::bail!(
+                    "Module '{}' declares local_rpms entry '{}' but '{}' does not exist — put the .rpm file in the project's rpms/ directory",
+                    rm.name,
+                    entry,
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn generate_containerfile(profile: &Profile, has_local_rpms: bool) -> String {
+    // COPY of a missing directory fails the build, so rpms/ is only copied
+    // when a module actually declares local_rpms.
+    let copy_rpms = if has_local_rpms { "COPY rpms /rpms\n" } else { "" };
     format!(
         r#"ARG BASE_IMAGE={0}
 
 FROM scratch AS ctx
 COPY build_files /
 COPY files /files
-
+{1}
 FROM ${{BASE_IMAGE}}
 
 # Cache-bust: dcli-bootc passes a content hash of build_files/ and files/ as
@@ -46,7 +83,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 
 RUN bootc container lint
 "#,
-        profile.base_image
+        profile.base_image, copy_rpms
     )
 }
 
@@ -69,7 +106,8 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule]) -> String {
             || !m.repos.enable.is_empty()
             || !m.repos.import_keys.is_empty();
         let has_remove = !m.remove.is_empty();
-        let has_install = !m.packages.is_empty() || !m.remote_rpms.is_empty();
+        let has_install =
+            !m.packages.is_empty() || !m.remote_rpms.is_empty() || !m.local_rpms.is_empty();
         let has_files = !m.files.is_empty();
         let has_scripts = m.scripts.pre.is_some() || m.scripts.post.is_some();
         let has_services = !m.services.is_empty() || !m.first_boot_services.is_empty();
@@ -192,6 +230,20 @@ REPO"#,
                 .collect();
             lines.push(format!("dnf install -y \\\n    {}", rpm_files.join(" \\\n    ")));
             lines.push("rm -f /tmp/*.rpm".to_string());
+        }
+
+        // ── Local RPMs (from the project's rpms/ directory, via the ctx mount) ──
+        if !m.local_rpms.is_empty() {
+            let rpm_files: Vec<String> = m
+                .local_rpms
+                .iter()
+                .map(|f| format!("/ctx/rpms/{}", f))
+                .collect();
+            lines.push(String::new());
+            lines.push(format!(
+                "dnf install -y \\\n    {}",
+                rpm_files.join(" \\\n    ")
+            ));
         }
 
         // ── Files overlay ──

@@ -56,6 +56,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     std::fs::create_dir_all(project_dir.join("modules"))?;
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
+    std::fs::create_dir_all(project_dir.join("rpms"))?;
 
     // Write profile.yaml
     let profile = Profile {
@@ -80,6 +81,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
             ..RepoConfig::default()
         },
         remote_rpms: vec![],
+        local_rpms: vec![],
         files: vec![],
         services: vec!["bootc-fetch-apply-updates.timer".to_string()],
         first_boot_services: vec![],
@@ -121,6 +123,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     std::fs::create_dir_all(project_dir.join("modules"))?;
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
+    std::fs::create_dir_all(project_dir.join("rpms"))?;
 
     // Write profile
     let profile = Profile {
@@ -152,6 +155,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
             import_keys: repo_lines.clone(),
         },
         remote_rpms: extract_remote_rpms(&content),
+        local_rpms: vec![],
         files: extract_copy_files(&content),
         services: extract_services(&content),
         first_boot_services: vec![],
