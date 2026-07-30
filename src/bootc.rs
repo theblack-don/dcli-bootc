@@ -33,6 +33,8 @@ pub struct BootcStatus {
     pub staged_digest: Option<String>,
     /// Image reference of the rollback deployment
     pub rollback_image: Option<String>,
+    /// Digest of the rollback deployment's image
+    pub rollback_digest: Option<String>,
 }
 
 /// Run `sudo bootc status --format json` and parse the output.
@@ -67,7 +69,7 @@ fn parse_status(json: &Value) -> BootcStatus {
 
     let (booted_image, booted_digest) = deployment("booted");
     let (staged_image, staged_digest) = deployment("staged");
-    let (rollback_image, _) = deployment("rollback");
+    let (rollback_image, rollback_digest) = deployment("rollback");
 
     BootcStatus {
         tracked_image: get_str("/spec/image/image"),
@@ -77,6 +79,7 @@ fn parse_status(json: &Value) -> BootcStatus {
         staged_image,
         staged_digest,
         rollback_image,
+        rollback_digest,
     }
 }
 
@@ -245,6 +248,124 @@ fn report_staged(image_ref: &str, before: Option<BootcStatus>) -> bool {
             false
         }
     }
+}
+
+/// Get the build (creation) date of an image in root's container storage,
+/// looked up by digest. Returns a short "YYYY-MM-DD HH:MM" string.
+///
+/// Local builds all reuse the same tag, so the build date is often the only
+/// way to tell two deployments apart. Returns `None` when the image is no
+/// longer in storage (e.g. pruned).
+pub fn image_created(digest: &str) -> Option<String> {
+    let output = Command::new("sudo")
+        .args([
+            "podman",
+            "image",
+            "inspect",
+            digest,
+            "--format",
+            "{{.Created}}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Format is like "2026-07-27 18:40:11.123456789 +0000 UTC" — keep
+    // date + HH:MM for display.
+    let mut parts = raw.split_whitespace();
+    let date = parts.next()?;
+    let time = parts.next()?;
+    let hm = time.get(..5).unwrap_or(time);
+    Some(format!("{} {}", date, hm))
+}
+
+/// Print " · built <date>" for a deployment digest when the image is still
+/// in local container storage; print nothing otherwise.
+pub fn print_built(digest: &Option<String>) {
+    if let Some(d) = digest {
+        if let Some(created) = image_created(d) {
+            print!(" · built {}", created);
+        }
+    }
+}
+
+/// Queue the previous deployment for the next boot via `sudo bootc rollback`,
+/// then verify and report what changed.
+///
+/// Returns `true` when a rollback was queued — including when the result
+/// cannot be verified, so the user is still offered a reboot.
+pub fn rollback() -> Result<bool> {
+    let before = status().ok();
+
+    println!("  Running: sudo bootc rollback");
+    println!();
+
+    let rc = Command::new("sudo")
+        .args(["bootc", "rollback"])
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .context("Failed to execute bootc rollback")?;
+
+    if !rc.success() {
+        anyhow::bail!("bootc rollback failed");
+    }
+
+    println!();
+    Ok(report_rollback(before))
+}
+
+/// Compare bootc status before/after a rollback and state plainly what
+/// changed. Returns `true` when the rollback target is queued for next boot.
+fn report_rollback(before: Option<BootcStatus>) -> bool {
+    let expected = before.as_ref().and_then(|b| b.rollback_image.as_deref());
+
+    let after = match status() {
+        Ok(s) => s,
+        Err(e) => {
+            println!(
+                "{} Rolled back, but could not verify the result: {}",
+                "!".yellow(),
+                e
+            );
+            println!("  Check with: sudo bootc status");
+            // Assume the rollback queued something so the user is still
+            // offered a reboot.
+            return true;
+        }
+    };
+
+    match (&after.staged_image, &after.staged_digest) {
+        (Some(image), digest) => {
+            let is_expected = expected.is_none() || expected == Some(image.as_str());
+            println!("{} Rollback deployment queued for next boot:", "✓".green());
+            print!("    {}", image);
+            if let Some(d) = digest {
+                print!("  ({})", short_digest(d));
+            }
+            println!();
+            if !is_expected {
+                println!(
+                    "  {} queued image differs from the recorded rollback target",
+                    "!".yellow()
+                );
+            }
+        }
+        _ => {
+            // `bootc rollback` reorders boot entries; on some bootc versions
+            // the queued deployment may not show up as `staged`. The command
+            // succeeded, so still offer the reboot.
+            println!(
+                "{} Rollback done — the previous deployment will boot next.",
+                "➜".bold().yellow()
+            );
+            println!("  Verify with: sudo bootc status");
+        }
+    }
+    true
 }
 
 /// Reboot handling after a switch.

@@ -88,6 +88,17 @@ enum Commands {
         reboot: bool,
     },
 
+    /// Roll back to the previous bootc deployment
+    Rollback {
+        /// Skip confirmation
+        #[arg(short, long)]
+        force: bool,
+
+        /// Automatically reboot after rolling back
+        #[arg(long)]
+        reboot: bool,
+    },
+
     /// Pull the latest base image, rebuild, and switch to the fresh build
     Update {
         /// Target tag (e.g. "stable", "latest")
@@ -121,10 +132,13 @@ fn main() -> Result<()> {
         Commands::Init { name, from, force } => {
             commands::init::run(name, from, force)?;
         }
+        Commands::Rollback { force, reboot } => {
+            commands::rollback::run(force, reboot)?;
+        }
         _ => {
             let project_path = project::resolve_project(cli.project)?;
             match cli.command {
-                Commands::Init { .. } => unreachable!(),
+                Commands::Init { .. } | Commands::Rollback { .. } => unreachable!(),
                 Commands::Gen { dry_run } => {
                     commands::gen::run(&project_path, dry_run, cli.host)?;
                 }

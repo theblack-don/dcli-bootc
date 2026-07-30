@@ -58,6 +58,7 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
                     if let Some(d) = &status.booted_digest {
                         print!(" ({})", bootc::short_digest(d));
                     }
+                    bootc::print_built(&status.booted_digest);
                     println!();
                 }
                 None => println!("  Booted:   (not a bootc system?)"),
@@ -69,6 +70,7 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
                     if let Some(d) = &status.staged_digest {
                         print!(" ({})", bootc::short_digest(d));
                     }
+                    bootc::print_built(&status.staged_digest);
                     println!();
                     println!(
                         "  {} Staged deployment will apply on next boot.",
@@ -79,7 +81,26 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
             }
 
             if let Some(image) = &status.rollback_image {
-                println!("  Rollback: {}", image);
+                print!("  Rollback: {}", image);
+                if let Some(d) = &status.rollback_digest {
+                    print!(" ({})", bootc::short_digest(d));
+                }
+                bootc::print_built(&status.rollback_digest);
+                println!();
+            }
+
+            // Local builds all reuse the same tag, so deployments are only
+            // distinguishable by digest — point that out when it matters.
+            let tag_shared = [&status.staged_image, &status.rollback_image]
+                .into_iter()
+                .flatten()
+                .any(|i| Some(i) == status.booted_image.as_ref());
+            if tag_shared {
+                println!(
+                    "  {}",
+                    "(same tag on multiple deployments — compare digests to tell builds apart)"
+                        .dimmed()
+                );
             }
         }
         Err(e) => {

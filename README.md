@@ -4,6 +4,51 @@ A declarative **bootc** image configuration manager. Define your system
 packages, repos, files, services, and scripts in YAML modules, then generate a
 Containerfile and build the image.
 
+## Installing from COPR
+
+### Atomic / bootc distros (Bazzite, Silverblue, Kinoite, Bluefin, Aurora)
+
+`dnf install` does not work on the live host (`/usr` is read-only), and
+binaries copied to `/usr/local/bin` sit outside the image lifecycle. Pick
+one of these instead:
+
+**Option 1 — bake it into your image (recommended).** Projects created with
+`dcli-bootc init` do this automatically via the generated `base.yaml`. For an
+existing project, add the repo and package to any enabled module:
+
+```yaml
+packages:
+  - dcli-bootc
+repos:
+  copr:
+    - theblackdon/dcli-bootc
+```
+
+Then `dcli-bootc build` and reboot. The tool now lives inside the image:
+it survives every rebuild/rebase and stays current with each
+`dcli-bootc update`.
+
+**Option 2 — layer it on the running system (rpm-ostree).**
+
+```bash
+sudo curl -sSL -o /etc/yum.repos.d/_copr_theblackdon-dcli-bootc.repo   https://copr.fedorainfracloud.org/coprs/theblackdon/dcli-bootc/repo/fedora-$(rpm -E %fedora)/theblackdon-dcli-bootc-fedora-$(rpm -E %fedora).repo
+sudo rpm-ostree install dcli-bootc
+sudo systemctl reboot
+```
+
+Caveat: layering packages marks deployments `incompatible` in bootc — from
+then on, system mutations (upgrades/switches) must go through `rpm-ostree`
+instead of `bootc`. If you drive your system with `dcli-bootc`, prefer
+Option 1.
+
+**Option 3 — transient install for testing.**
+
+```bash
+sudo bootc usr-overlay
+sudo dnf copr enable theblackdon/dcli-bootc
+sudo dnf install dcli-bootc    # gone after the next reboot
+```
+
 ## Commands
 
 | Command | Description |
@@ -12,6 +57,7 @@ Containerfile and build the image.
 | `gen`   | Generate Containerfile and build script from YAML modules |
 | `build` | Build the container image (warns when the base image is outdated) and optionally switch bootc deployment |
 | `switch`| Switch the bootc deployment to the locally built image |
+| `rollback` | Roll back to the previous bootc deployment |
 | `update`| Pull the latest base image, rebuild, and switch to the fresh build |
 | `status`| Show bootc deployment status and project info |
 
@@ -189,50 +235,46 @@ dcli-bootc update --reboot   # Same, then reboot
 This is the flow `dcli-bootc build` offers to hand off to when it detects that
 your local base image is outdated.
 
-## Installing from COPR
-
-### Atomic / bootc distros (Bazzite, Silverblue, Kinoite, Bluefin, Aurora)
-
-`dnf install` does not work on the live host (`/usr` is read-only), and
-binaries copied to `/usr/local/bin` sit outside the image lifecycle. Pick
-one of these instead:
-
-**Option 1 — bake it into your image (recommended).** Projects created with
-`dcli-bootc init` do this automatically via the generated `base.yaml`. For an
-existing project, add the repo and package to any enabled module:
-
-```yaml
-packages:
-  - dcli-bootc
-repos:
-  copr:
-    - theblackdon/dcli-bootc
-```
-
-Then `dcli-bootc build` and reboot. The tool now lives inside the image:
-it survives every rebuild/rebase and stays current with each
-`dcli-bootc update`.
-
-**Option 2 — layer it on the running system (rpm-ostree).**
+## Rollback
 
 ```bash
-sudo curl -sSL -o /etc/yum.repos.d/_copr_theblackdon-dcli-bootc.repo   https://copr.fedorainfracloud.org/coprs/theblackdon/dcli-bootc/repo/fedora-$(rpm -E %fedora)/theblackdon-dcli-bootc-fedora-$(rpm -E %fedora).repo
-sudo rpm-ostree install dcli-bootc
-sudo systemctl reboot
+dcli-bootc rollback            # Queue the previous deployment for next boot
+dcli-bootc rollback --reboot   # Roll back and reboot immediately
 ```
 
-Caveat: layering packages marks deployments `incompatible` in bootc — from
-then on, system mutations (upgrades/switches) must go through `rpm-ostree`
-instead of `bootc`. If you drive your system with `dcli-bootc`, prefer
-Option 1.
+This wraps `sudo bootc rollback`: it shows the booted and rollback
+deployments first and asks for confirmation (`--force` skips it). On the
+next boot the previous deployment runs and the current one becomes the new
+rollback target.
 
-**Option 3 — transient install for testing.**
+**Mind the staged deployment.** bootc keeps only two deployments (booted +
+rollback) plus one staged update. If an update is staged but not yet booted,
+rolling back **discards it** and boots the rollback deployment — you end up
+further back than just undoing the pending update. dcli-bootc warns loudly
+in this case; to cancel only the pending update, remove just the staged
+entry (`sudo ostree admin status`, then `sudo ostree admin undeploy 0`).
 
-```bash
-sudo bootc usr-overlay
-sudo dnf copr enable theblackdon/dcli-bootc
-sudo dnf install dcli-bootc    # gone after the next reboot
-```
+**Tags vs. digests.** Every local build reuses the same tag
+(`localhost/<name>:<tag>`), so deployments are told apart by **digest**, not
+tag — `dcli-bootc status` shows each deployment's digest and **build date**
+(as long as the image is still in container storage). Rolling back twice in
+a row toggles between the two most recent deployments. To go forward to your
+newest local build again, run `dcli-bootc switch` — the tag always points at
+the latest build in container storage, and switching re-stages it. To boot
+an older image that is no longer a deployment, re-tag its digest and switch:
+`sudo podman tag sha256:<digest> localhost/<name>:rescue` then
+`dcli-bootc switch --tag rescue`.
+
+Two caveats come from bootc itself: `/etc` changes made since the old
+deployment do not carry over (bootc reorders existing deployments instead of
+creating a new one, so `/etc` reverts to the rolled-back state), and an
+auto-update agent such as `bootc-fetch-apply-updates.timer` may re-apply
+updates and revert the rollback.
+
+Rollback is a purely system-level operation: it works from any directory (no
+project needed) and never touches profiles, hosts, or tags — the deployments
+bootc keeps already record which image (including which host variant) they
+boot into.
 
 ## Packaging
 
