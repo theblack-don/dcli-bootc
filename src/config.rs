@@ -18,6 +18,53 @@ pub struct Profile {
 
     #[serde(default, alias = "modules")]
     pub enabled_modules: Vec<String>,
+
+    /// Dotfiles from the project's dotfiles/ directory, symlinked into the
+    /// invoking user's home (host-side, on build/update or `dcli-bootc dotfiles`)
+    #[serde(default)]
+    pub dotfiles: Vec<DotfileEntry>,
+}
+
+/// A single dotfiles entry.
+///
+/// Plain form (`fish/`) names a file or directory under the project's
+/// dotfiles/ directory and targets `~/.config/<name>`. The single-key map
+/// form (`bashrc: ~/.bashrc`) sets an explicit full target path for files
+/// that do not live in ~/.config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DotfileEntry {
+    /// Plain name (e.g. `fish/`) → ~/.config/fish
+    Simple(String),
+    /// Single-key map of source name → full target path (e.g. `bashrc: ~/.bashrc`)
+    Mapped(std::collections::HashMap<String, String>),
+}
+
+impl DotfileEntry {
+    /// Name of the file/dir under the project's dotfiles/ directory
+    /// (trailing slashes stripped).
+    pub fn source_name(&self) -> String {
+        match self {
+            DotfileEntry::Simple(name) => name.trim_end_matches('/').to_string(),
+            DotfileEntry::Mapped(map) => map
+                .keys()
+                .next()
+                .map(|k| k.trim_end_matches('/').to_string())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// Target path as configured. Plain entries default to
+    /// `~/.config/<name>`; mapped entries use their explicit path. A leading
+    /// `~/` is expanded against the invoking user's home at apply time.
+    pub fn target(&self) -> String {
+        match self {
+            DotfileEntry::Simple(name) => {
+                format!("~/.config/{}", name.trim_end_matches('/'))
+            }
+            DotfileEntry::Mapped(map) => map.values().next().cloned().unwrap_or_default(),
+        }
+    }
 }
 
 fn default_base_image() -> String {
@@ -44,6 +91,14 @@ pub struct HostConfig {
     /// Modules to remove from the profile's enabled_modules
     #[serde(default)]
     pub exclude_modules: Vec<String>,
+
+    /// Dotfiles to add on top of the profile's dotfiles
+    #[serde(default)]
+    pub dotfiles: Vec<DotfileEntry>,
+
+    /// Dotfiles to remove from the profile's dotfiles (matched by source name)
+    #[serde(default)]
+    pub exclude_dotfiles: Vec<String>,
 
     /// Optional base image override for this host
     #[serde(default)]
@@ -308,8 +363,9 @@ pub fn detect_hostname() -> Option<String> {
 /// exists. With no host, the plain profile is returned unchanged.
 ///
 /// The host overlay adds `modules` on top of the profile's enabled_modules
-/// (deduped, order preserved), removes `exclude_modules`, and applies any
-/// base image overrides.
+/// (deduped, order preserved), removes `exclude_modules`, merges `dotfiles`
+/// the same way (minus `exclude_dotfiles`, matched by source name), and
+/// applies any base image overrides.
 pub fn resolve_effective_profile(
     project_dir: &Path,
     host: Option<&str>,
@@ -344,6 +400,31 @@ pub fn resolve_effective_profile(
         }
     }
     profile.enabled_modules = merged;
+
+    // Merge dotfiles the same way: profile + host additions (deduped by
+    // source name, order preserved) minus excludes (matched by source name).
+    for ex in &host_cfg.exclude_dotfiles {
+        let ex = ex.trim_end_matches('/');
+        if !profile.dotfiles.iter().any(|d| d.source_name() == ex) {
+            eprintln!(
+                "Warning: host '{}' excludes dotfiles entry '{}' which is not in the profile's dotfiles",
+                host_name, ex
+            );
+        }
+    }
+    let excludes: Vec<String> = host_cfg
+        .exclude_dotfiles
+        .iter()
+        .map(|e| e.trim_end_matches('/').to_string())
+        .collect();
+    let mut merged_dotfiles: Vec<DotfileEntry> = Vec::new();
+    for d in profile.dotfiles.iter().chain(host_cfg.dotfiles.iter()) {
+        let name = d.source_name();
+        if !excludes.contains(&name) && !merged_dotfiles.iter().any(|m| m.source_name() == name) {
+            merged_dotfiles.push(d.clone());
+        }
+    }
+    profile.dotfiles = merged_dotfiles;
 
     if let Some(base) = host_cfg.base_image {
         profile.base_image = base;

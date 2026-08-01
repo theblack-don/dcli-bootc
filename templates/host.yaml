@@ -15,6 +15,14 @@ modules:
 # Modules removed from profile.yaml's enabled_modules (optional)
 exclude_modules: []
 
+# Dotfiles added on top of profile.yaml's dotfiles (optional)
+# dotfiles:
+#   - yazi/
+
+# Dotfiles removed from profile.yaml's dotfiles, by source name (optional)
+# exclude_dotfiles:
+#   - helix
+
 # Optional base image overrides for this host
 # base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
 # nvidia_base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable

@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use crate::bootc;
 use crate::commands::update;
 use crate::config;
+use crate::dotfiles;
 use crate::generator;
 use crate::hash;
 use crate::module;
@@ -118,6 +119,17 @@ pub fn run(
 
     // ── Verify the image actually contains what the modules declare ──
     verify_packages(project_dir, &profile, &image_ref)?;
+
+    // ── Symlink dotfiles into the invoking user's home (host-side; the
+    // container build cannot touch home directories). Failures are reported
+    // but do not block the switch prompt — dotfiles are orthogonal to the
+    // OS image.
+    if !profile.dotfiles.is_empty() {
+        println!();
+        if let Err(e) = dotfiles::apply(project_dir, &profile.dotfiles) {
+            eprintln!("{} Failed to apply dotfiles: {:#}", "!".yellow(), e);
+        }
+    }
 
     if let (Some(built), Ok(bootc_status)) = (&built_digest, bootc::status()) {
         if let Some(booted) = &bootc_status.booted_digest {

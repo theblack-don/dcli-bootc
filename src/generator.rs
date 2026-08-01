@@ -19,6 +19,7 @@ pub fn generate(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Re
     let modules = load_enabled_modules(project_dir, &profile.enabled_modules)?;
 
     validate_local_rpms(project_dir, &modules)?;
+    crate::dotfiles::validate(project_dir, &profile.dotfiles)?;
 
     let has_local_rpms = modules.iter().any(|rm| !rm.module.local_rpms.is_empty());
     let containerfile = generate_containerfile(profile, has_local_rpms);
@@ -304,9 +305,4 @@ REPO"#,
     lines.push(String::new());
 
     lines.join("\n")
-}
-
-/// Preview the generated output without writing
-pub fn preview(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Result<GeneratedFiles> {
-    generate(project_dir, profile, host)
 }

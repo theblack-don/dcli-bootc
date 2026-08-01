@@ -17,7 +17,7 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
         .unwrap_or_else(|| project_dir.join("profile.yaml").display().to_string());
     println!("  Profile: {}", profile_display);
     match &active_host {
-        Some(h) => println!("  Host: {} (modules shown are the effective set)", h),
+        Some(h) => println!("  Host: {} (modules/dotfiles shown are the effective set)", h),
         None => println!("  Host: none (profile only)"),
     }
     println!("  Base image: {}", profile.base_image);
@@ -29,6 +29,14 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
         profile.enabled_modules.len(),
         profile.enabled_modules.join(", ")
     );
+    if !profile.dotfiles.is_empty() {
+        let entries: Vec<String> = profile
+            .dotfiles
+            .iter()
+            .map(|d| format!("{} → {}", d.source_name(), d.target()))
+            .collect();
+        println!("  Dotfiles ({}): {}", entries.len(), entries.join(", "));
+    }
     println!("  Default tag: {}", profile.default_tag);
 
     // Local build state — a host build is tagged with the host name

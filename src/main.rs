@@ -1,6 +1,7 @@
 mod bootc;
 mod commands;
 mod config;
+mod dotfiles;
 mod generator;
 mod hash;
 mod module;
@@ -123,6 +124,9 @@ enum Commands {
 
     /// Show bootc deployment status and project info
     Status,
+
+    /// Apply profile dotfiles into ~ as symlinks (also runs on build/update)
+    Dotfiles,
 }
 
 fn main() -> Result<()> {
@@ -178,6 +182,9 @@ fn main() -> Result<()> {
                 }
                 Commands::Status => {
                     commands::status::run(&project_path, cli.host)?;
+                }
+                Commands::Dotfiles => {
+                    commands::dotfiles::run(&project_path, cli.host)?;
                 }
             }
         }

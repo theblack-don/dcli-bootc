@@ -57,6 +57,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
     std::fs::create_dir_all(project_dir.join("rpms"))?;
+    std::fs::create_dir_all(project_dir.join("dotfiles"))?;
 
     // Write profile.yaml
     let profile = Profile {
@@ -65,6 +66,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         nvidia_base_image: Some("ghcr.io/ublue-os/bazzite-nvidia-open:stable".to_string()),
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
+        dotfiles: vec![],
     };
     let profile_yaml = serde_yaml::to_string(&profile)?;
     std::fs::write(project_dir.join("profile.yaml"), &profile_yaml)?;
@@ -124,6 +126,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
     std::fs::create_dir_all(project_dir.join("rpms"))?;
+    std::fs::create_dir_all(project_dir.join("dotfiles"))?;
 
     // Write profile
     let profile = Profile {
@@ -132,6 +135,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         nvidia_base_image: None,
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
+        dotfiles: vec![],
     };
     std::fs::write(
         project_dir.join("profile.yaml"),

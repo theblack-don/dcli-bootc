@@ -5,3 +5,11 @@ default_tag: latest
 
 enabled_modules:
   - base
+
+# Dotfiles from dotfiles/, symlinked into your home on build/update (or with
+# `dcli-bootc dotfiles`). Plain entries target ~/.config/<name>; use a
+# single-key map for files that live elsewhere:
+# dotfiles:
+#   - fish/
+#   - helix/
+#   - bashrc: ~/.bashrc

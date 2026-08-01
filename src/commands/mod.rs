@@ -1,4 +1,5 @@
 pub mod build;
+pub mod dotfiles;
 pub mod gen;
 pub mod init;
 pub mod rollback;

@@ -60,6 +60,7 @@ sudo dnf install dcli-bootc    # gone after the next reboot
 | `rollback` | Roll back to the previous bootc deployment |
 | `update`| Pull the latest base image, rebuild, and switch to the fresh build |
 | `status`| Show bootc deployment status and project info |
+| `dotfiles` | Apply profile dotfiles into ~ as symlinks (also runs on build/update) |
 
 ## Quickstart
 
@@ -87,6 +88,7 @@ my-image/
 │   └── laptop.yaml
 ├── files/              # Files to copy into the image
 ├── rpms/               # Local .rpm files installed via local_rpms
+├── dotfiles/           # Dotfiles symlinked into ~ (see Dotfiles section)
 └── .dcli-bootc         # Project marker
 ```
 
@@ -156,6 +158,63 @@ file in `rpms/` invalidates the customization layer via the build-input hash,
 and the post-build verification confirms each local RPM's package is actually
 installed. The `.gitignore` written by `init` already excludes `*.rpm`, so the
 binaries stay out of git.
+
+## Dotfiles
+
+Drop per-app config directories or files into the project's `dotfiles/`
+directory and list them in `profile.yaml`:
+
+```
+dotfiles/
+├── fish/
+├── helix/
+└── bashrc
+```
+
+```yaml
+# profile.yaml
+dotfiles:
+  - fish/              # → ~/.config/fish
+  - helix/             # → ~/.config/helix
+  - bashrc: ~/.bashrc  # custom target for files outside ~/.config
+```
+
+Plain entries are symlinked to `~/.config/<name>`; use the single-key map
+form (`source: target`, with a `~/` or absolute path) for files that live
+elsewhere.
+
+Dotfiles are applied **host-side** — container builds run as root and cannot
+touch user homes — at the end of `dcli-bootc build`/`update`, or on demand
+without building:
+
+```bash
+dcli-bootc dotfiles
+```
+
+Each target becomes a symlink into the project
+(`~/.config/fish` → `<project>/dotfiles/fish`), so changes apps write to
+`~/.config` land in the project and survive image rebuilds — commit them to
+git. Applying is idempotent: correct symlinks are skipped, wrong ones
+re-pointed, and existing real files/dirs are moved to `<target>.dcli-bak`
+before linking, so nothing is lost. Declared entries must exist in
+`dotfiles/` — `gen` and `build` fail fast otherwise (same as `local_rpms`).
+
+Hosts can add or remove dotfiles exactly like modules (`exclude_dotfiles`
+matches by source name):
+
+```yaml
+# hosts/laptop.yaml
+dotfiles:
+  - yazi/
+exclude_dotfiles:
+  - helix
+```
+
+Caveats: whole-directory symlinks mean app state written next to your config
+(e.g. fish's `fish_variables`) also lands in the project — gitignore what you
+don't want to track. Apps that rewrite a config *file* via
+write-temp-then-rename can replace its symlink with a real file; re-running
+`dcli-bootc dotfiles` repairs it.
 
 ## Build
 
