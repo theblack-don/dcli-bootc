@@ -73,7 +73,7 @@ pub fn run(
     // before pulling the base image)
     if !skip_freshness_check {
         let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
-        plan::print_build_plan(project_dir, &modules, &image_ref, base_image);
+        plan::print_build_plan(project_dir, &modules, &image_ref, base_image, profile.package_manager);
     }
 
     // ── Cache-busting content hash of the build inputs ──
@@ -258,8 +258,6 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
     for rm in &modules {
         wanted.extend(rm.module.packages.iter().cloned());
         unwanted.extend(rm.module.remove.iter().cloned());
-        // Local RPMs are declared by filename — resolve their real package
-        // names from the RPM headers so they are verified too.
         for entry in &rm.module.local_rpms {
             match plan::local_rpm_package_name(project_dir, entry) {
                 Some(name) => wanted.push(name),
@@ -278,24 +276,33 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
     println!();
     println!("{} Verifying packages in the built image...", "▶".cyan());
 
-    let output = Command::new("sudo")
-        .args([
-            "podman",
-            "run",
-            "--rm",
-            image_ref,
-            "rpm",
-            "-qa",
-            "--queryformat",
-            "%{NAME}\\n",
-        ])
-        .output()
-        .context("Failed to inspect the built image")?;
+    let (query_cmd, query_args) = match profile.package_manager {
+        config::PackageManager::Dnf | config::PackageManager::Zypper => {
+            ("rpm", vec!["-qa", "--queryformat", "%{NAME}\\n"])
+        }
+        config::PackageManager::Apt => {
+            ("dpkg-query", vec!["-W", "-f=${Package}\\n"])
+        }
+        config::PackageManager::Pacman => {
+            ("pacman", vec!["-Q", "--quiet"])
+        }
+    };
+
+    let mut cmd = Command::new("sudo");
+    cmd.arg("podman")
+        .arg("run")
+        .arg("--rm")
+        .arg(image_ref)
+        .arg(query_cmd);
+    cmd.args(&query_args);
+
+    let output = cmd.output().context("Failed to inspect the built image")?;
 
     if !output.status.success() {
         println!(
-            "{} Could not verify image contents (rpm query failed) — skipping check",
-            "!".yellow()
+            "{} Could not verify image contents ({} failed) — skipping check",
+            "!".yellow(),
+            query_cmd
         );
         return Ok(());
     }

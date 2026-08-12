@@ -1,8 +1,42 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::config::Profile;
+use crate::config::{PackageManager, Profile, RepoConfig};
 use crate::module::{load_enabled_modules, ResolvedModule};
+
+/// Package-manager-specific shell commands
+struct PkgManager {
+    pub install: &'static str,
+    pub remove: &'static str,
+    pub clean: &'static str,
+}
+
+impl PkgManager {
+    fn for_pm(pm: PackageManager) -> Self {
+        match pm {
+            PackageManager::Dnf => PkgManager {
+                install: "dnf install -y",
+                remove: "dnf remove -y",
+                clean: "dnf clean all && rm -rf /var/cache/dnf/*",
+            },
+            PackageManager::Apt => PkgManager {
+                install: "apt-get install -y",
+                remove: "apt-get remove -y",
+                clean: "apt-get clean && rm -rf /var/lib/apt/lists/*",
+            },
+            PackageManager::Zypper => PkgManager {
+                install: "zypper install -y",
+                remove: "zypper remove -y",
+                clean: "zypper clean && rm -rf /var/cache/zypp/*",
+            },
+            PackageManager::Pacman => PkgManager {
+                install: "pacman -S --noconfirm",
+                remove: "pacman -Rns --noconfirm",
+                clean: "pacman -Scc --noconfirm",
+            },
+        }
+    }
+}
 
 /// Generated output files
 pub struct GeneratedFiles {
@@ -94,6 +128,7 @@ RUN bootc container lint
 
 fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option<&str>) -> String {
     let mut lines = Vec::new();
+    let pm = PkgManager::for_pm(profile.package_manager);
 
     lines.push("#!/usr/bin/env bash".to_string());
     lines.push("set -euo pipefail".to_string());
@@ -112,7 +147,8 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         let has_repos = !m.repos.copr.is_empty()
             || !m.repos.rpm_urls.is_empty()
             || !m.repos.enable.is_empty()
-            || !m.repos.import_keys.is_empty();
+            || !m.repos.import_keys.is_empty()
+            || !m.repos.apt_lines.is_empty();
         let has_remove = !m.remove.is_empty();
         let has_install =
             !m.packages.is_empty() || !m.remote_rpms.is_empty() || !m.local_rpms.is_empty();
@@ -137,21 +173,23 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         }
 
         // ── Repos ──
-        if !m.repos.import_keys.is_empty() {
-            for key in &m.repos.import_keys {
-                lines.push(format!("rpmkeys --import \"{}\"", key));
-            }
-        }
+        match profile.package_manager {
+            PackageManager::Dnf | PackageManager::Zypper => {
+                if !m.repos.import_keys.is_empty() {
+                    for key in &m.repos.import_keys {
+                        lines.push(format!("rpmkeys --import \"{}\"", key));
+                    }
+                }
 
-        for copr in &m.repos.copr {
-            lines.push(format!("dnf5 -y copr enable {}", copr));
-        }
+                for copr in &m.repos.copr {
+                    lines.push(format!("dnf5 -y copr enable {}", copr));
+                }
 
-        for repo in &m.repos.rpm_urls {
-            let name = &repo.name;
-            let baseurl = &repo.baseurl;
-            lines.push(format!(
-                r#"cat > /etc/yum.repos.d/{}.repo << 'REPO'
+                for repo in &m.repos.rpm_urls {
+                    let name = &repo.name;
+                    let baseurl = &repo.baseurl;
+                    lines.push(format!(
+                        r#"cat > /etc/yum.repos.d/{}.repo << 'REPO'
 [{}]
 name={}
 baseurl={}
@@ -162,36 +200,67 @@ repo_gpgcheck=0
 enabled=1
 enabled_metadata=1
 REPO"#,
-                name,
-                name,
-                name,
-                baseurl,
-                if repo.gpgkey.is_some() { "1" } else { "0" },
-            ));
-            if let Some(gpgkey) = &repo.gpgkey {
-                lines.push(format!("rpmkeys --import \"{}\"", gpgkey));
-            }
-        }
+                        name,
+                        name,
+                        name,
+                        baseurl,
+                        if repo.gpgkey.is_some() { "1" } else { "0" },
+                    ));
+                    if let Some(gpgkey) = &repo.gpgkey {
+                        lines.push(format!("rpmkeys --import \"{}\"", gpgkey));
+                    }
+                }
 
-        for repo_name in &m.repos.enable {
-            lines.push(format!(
-                r#"sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/{}.repo"#,
-                repo_name
-            ));
+                for repo_name in &m.repos.enable {
+                    lines.push(format!(
+                        r#"sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/{}.repo"#,
+                        repo_name
+                    ));
+                }
+            }
+            PackageManager::Apt => {
+                for line in &m.repos.apt_lines {
+                    lines.push(format!("echo \"{}\" >> /etc/apt/sources.list", line.replace("\"", "\\\"")));
+                }
+                if !m.repos.import_keys.is_empty() {
+                    lines.push("apt-get update".to_string());
+                    for key in &m.repos.import_keys {
+                        lines.push(format!("curl -fsSL \"{}\" | apt-key add -", key));
+                    }
+                }
+            }
+            PackageManager::Pacman => {
+                for repo in &m.repos.rpm_urls {
+                    let baseurl = &repo.baseurl;
+                    lines.push(format!(
+                        r#"cat >> /etc/pacman.conf << 'REPO'
+[{}]
+Server = {}
+REPO"#,
+                        repo.name, baseurl
+                    ));
+                }
+                if !m.repos.import_keys.is_empty() {
+                    lines.push("pacman -Sy --noconfirm".to_string());
+                    for key in &m.repos.import_keys {
+                        lines.push(format!("curl -fsSL \"{}\" | pacman-key --add - && pacman-key --lsign-key {}", key, key));
+                    }
+                }
+            }
         }
 
         // ── Remove packages ──
         if !m.remove.is_empty() {
             let pkgs = m.remove.join(" \\\n    ");
             lines.push(String::new());
-            lines.push(format!("dnf remove -y \\\n    {}", pkgs));
+            lines.push(format!("{} \\\n    {}", pm.remove, pkgs));
         }
 
         // ── Install packages ──
         if !m.packages.is_empty() {
             let pkgs = m.packages.join(" \\\n    ");
             lines.push(String::new());
-            lines.push(format!("dnf install -y \\\n    {}", pkgs));
+            lines.push(format!("{} \\\n    {}", pm.install, pkgs));
         }
 
         // ── Remote RPMs ──
@@ -206,21 +275,10 @@ REPO"#,
                         .unwrap_or("package.rpm")
                         .to_string()
                 });
-            let sha_part = if let Some(_sha) = &rpm.sha256 {
-                // Could add sha256sum verification
-                String::new()
-            } else {
-                String::new()
-            };
             lines.push(format!(
-                "curl -L -o /tmp/{} \"{}\"{}",
-                filename,
-                rpm.url,
-                if sha_part.is_empty() { "" } else { " && \\" }
+                "curl -L -o /tmp/{} \"{}\"",
+                filename, rpm.url
             ));
-            if !sha_part.is_empty() {
-                // Re-emit the install on the next line
-            }
         }
 
         if !m.remote_rpms.is_empty() {
@@ -236,7 +294,7 @@ REPO"#,
                 })
                 .map(|f| format!("/tmp/{}", f))
                 .collect();
-            lines.push(format!("dnf install -y \\\n    {}", rpm_files.join(" \\\n    ")));
+            lines.push(format!("{} \\\n    {}", pm.install, rpm_files.join(" \\\n    ")));
             lines.push("rm -f /tmp/*.rpm".to_string());
         }
 
@@ -249,7 +307,8 @@ REPO"#,
                 .collect();
             lines.push(String::new());
             lines.push(format!(
-                "dnf install -y \\\n    {}",
+                "{} \\\n    {}",
+                pm.install,
                 rpm_files.join(" \\\n    ")
             ));
         }
@@ -301,7 +360,7 @@ REPO"#,
     // ── Final cleanup ──
     lines.push(String::new());
     lines.push("# === cleanup ===".to_string());
-    lines.push("dnf clean all && rm -rf /var/cache/dnf/*".to_string());
+    lines.push(format!("{}", pm.clean));
     lines.push(String::new());
 
     lines.join("\n")

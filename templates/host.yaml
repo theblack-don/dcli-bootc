@@ -26,3 +26,6 @@ exclude_modules: []
 # Optional base image overrides for this host
 # base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
 # nvidia_base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+
+# Optional package manager override (dnf, apt, zypper, pacman)
+# package_manager: apt
