@@ -8,6 +8,7 @@ use std::path::Path;
 use std::process::Command;
 
 use crate::bootc;
+use crate::config;
 use crate::module::ResolvedModule;
 
 /// Print everything the build will do, then (best-effort) what changed
@@ -17,6 +18,7 @@ pub fn print_build_plan(
     modules: &[ResolvedModule],
     image_ref: &str,
     base_image: &str,
+    package_manager: config::PackageManager,
 ) {
     println!(
         "{} Build plan: {} (base: {})",
@@ -31,12 +33,12 @@ pub fn print_build_plan(
     }
 
     println!();
-    print_comparison(project_dir, modules, image_ref);
+    print_comparison(project_dir, modules, image_ref, package_manager);
 
     println!();
     println!(
         "  {}",
-        "Package versions are resolved by dnf during the build.".dimmed()
+        format!("Package versions are resolved by {} during the build.", package_manager.as_str()).dimmed()
     );
     println!();
 }
@@ -119,7 +121,12 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
 /// Best-effort diff against the previously built image: which declared
 /// packages are new since then, and which declared removals are actually
 /// present there. Silently degrades when the image or sudo is unavailable.
-fn print_comparison(project_dir: &Path, modules: &[ResolvedModule], image_ref: &str) {
+fn print_comparison(
+    project_dir: &Path,
+    modules: &[ResolvedModule],
+    image_ref: &str,
+    package_manager: config::PackageManager,
+) {
     let Some(digest) = bootc::local_image_digest(image_ref) else {
         println!(
             "  {}",
@@ -128,7 +135,7 @@ fn print_comparison(project_dir: &Path, modules: &[ResolvedModule], image_ref: &
         return;
     };
 
-    let Some(installed) = query_image_packages(image_ref) else {
+    let Some(installed) = query_image_packages(image_ref, package_manager) else {
         println!(
             "  {}",
             "(could not read the previous build's package list — skipping comparison)".dimmed()
@@ -176,21 +183,33 @@ fn join_refs(items: &[&String]) -> String {
         .join(", ")
 }
 
-/// Package names installed in an image, queried by running rpm inside it.
-fn query_image_packages(image_ref: &str) -> Option<HashSet<String>> {
-    let output = Command::new("sudo")
-        .args([
-            "podman",
-            "run",
-            "--rm",
-            image_ref,
-            "rpm",
-            "-qa",
-            "--queryformat",
-            "%{NAME}\\n",
-        ])
-        .output()
-        .ok()?;
+/// Package names installed in an image, queried by running the appropriate
+/// package manager query inside it.
+fn query_image_packages(
+    image_ref: &str,
+    package_manager: config::PackageManager,
+) -> Option<HashSet<String>> {
+    let (query_cmd, query_args) = match package_manager {
+        config::PackageManager::Dnf | config::PackageManager::Zypper => {
+            ("rpm", vec!["-qa", "--queryformat", "%{NAME}\\n"])
+        }
+        config::PackageManager::Apt => {
+            ("dpkg-query", vec!["-W", "-f=${Package}\\n"])
+        }
+        config::PackageManager::Pacman => {
+            ("pacman", vec!["-Q", "--quiet"])
+        }
+    };
+
+    let mut cmd = Command::new("sudo");
+    cmd.arg("podman")
+        .arg("run")
+        .arg("--rm")
+        .arg(image_ref)
+        .arg(query_cmd);
+    cmd.args(&query_args);
+
+    let output = cmd.output().ok()?;
     if !output.status.success() {
         return None;
     }

@@ -25,6 +25,10 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
         println!("  NVIDIA variant: {}", nv);
     }
     println!(
+        "  Package manager: {}",
+        profile.package_manager.as_str()
+    );
+    println!(
         "  Modules ({}): {}",
         profile.enabled_modules.len(),
         profile.enabled_modules.join(", ")

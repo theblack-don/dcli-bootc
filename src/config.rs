@@ -2,6 +2,28 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+/// Supported package managers for build-time package operations
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PackageManager {
+    #[default]
+    Dnf,
+    Apt,
+    Zypper,
+    Pacman,
+}
+
+impl PackageManager {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            PackageManager::Dnf => "dnf",
+            PackageManager::Apt => "apt",
+            PackageManager::Zypper => "zypper",
+            PackageManager::Pacman => "pacman",
+        }
+    }
+}
+
 /// Top-level profile for a bootc image project
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -18,6 +40,11 @@ pub struct Profile {
 
     #[serde(default, alias = "modules")]
     pub enabled_modules: Vec<String>,
+
+    /// Package manager used in the base image (dnf, apt, zypper, pacman).
+    /// Auto-detected at build time if not specified; default is "dnf".
+    #[serde(default)]
+    pub package_manager: PackageManager,
 
     /// Dotfiles from the project's dotfiles/ directory, symlinked into the
     /// invoking user's home (host-side, on build/update or `dcli-bootc dotfiles`)
@@ -107,6 +134,10 @@ pub struct HostConfig {
     /// Optional NVIDIA base image override for this host
     #[serde(default)]
     pub nvidia_base_image: Option<String>,
+
+    /// Optional package manager override for this host
+    #[serde(default)]
+    pub package_manager: Option<PackageManager>,
 }
 
 /// A single module definition loaded from modules/*.yaml
@@ -175,6 +206,10 @@ pub struct RepoConfig {
 
     #[serde(default)]
     pub rpm_urls: Vec<RpmRepo>,
+
+    /// APT repository lines (e.g. "deb http://... stable main")
+    #[serde(default)]
+    pub apt_lines: Vec<String>,
 
     /// Names of already-installed .repo files to enable (e.g. "terra")
     #[serde(default)]
@@ -431,6 +466,9 @@ pub fn resolve_effective_profile(
     }
     if let Some(nv) = host_cfg.nvidia_base_image {
         profile.nvidia_base_image = Some(nv);
+    }
+    if let Some(pm) = host_cfg.package_manager {
+        profile.package_manager = pm;
     }
 
     Ok((profile, Some(host_name)))
