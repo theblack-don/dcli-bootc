@@ -1,0 +1,61 @@
+include:
+  - project: "theblackdon/dcli-bootc/.gitlab/ci-templates"
+    ref: main
+    file: "/dcli-bootc.yml"
+
+stages:
+  - prepare
+  - build
+  - push
+
+variables:
+  BOOTC_PROJECT_PATH: "./my-image"
+  BOOTC_HOST: ""
+  BOOTC_TAG: "latest"
+
+before_script:
+  - dnf install -y dcli-bootc
+
+gen:
+  stage: prepare
+  image: registry.fedoraproject.org/fedora:latest
+  script:
+    - dcli-bootc gen --path $BOOTC_PROJECT_PATH
+  artifacts:
+    paths:
+      - $BOOTC_PROJECT_PATH/Containerfile
+      - $BOOTC_PROJECT_PATH/build_files/
+
+build:
+  stage: build
+  image: registry.fedoraproject.org/fedora:latest
+  needs: ["gen"]
+  script:
+    - |
+      if [ -n "$BOOTC_HOST" ]; then
+        dcli-bootc build --path $BOOTC_PROJECT_PATH --host $BOOTC_HOST --force
+      else
+        dcli-bootc build --path $BOOTC_PROJECT_PATH --force
+      fi
+  artifacts:
+    paths:
+      - $BOOTC_PROJECT_PATH/build_files/
+
+push:
+  stage: push
+  image: registry.fedoraproject.org/fedora:latest
+  needs: ["build"]
+  only:
+    - main
+    - master
+  script:
+    - |
+      IMAGE=$(dcli-bootc status --path $BOOTC_PROJECT_PATH --format json | jq -r '.image')
+      skopeo copy containers-storage:$IMAGE docker://registry.example.com/$IMAGE
+  when: manual
+
+# Example: build the image daily
+# schedule:
+#   - cron: "0 0 * * *"
+#     display_name: Daily bootc image build
+#     ref: main

@@ -1,0 +1,73 @@
+name: "dcli-bootc"
+description: "Install dcli-bootc, run a subcommand, and optionally push to a registry"
+inputs:
+  project-path:
+    description: "Path to the bootc project directory"
+    required: true
+    default: "."
+  command:
+    description: "dcli-bootc subcommand to run (gen, build, switch, update)"
+    required: true
+    default: "build"
+  host:
+    description: "Host overlay to use"
+    required: false
+    default: ""
+  force:
+    description: "Pass --force flag"
+    required: false
+    default: "false"
+  skip-build:
+    description: "Skip the actual build step (gen only)"
+    required: false
+    default: "false"
+  registry:
+    description: "Registry to push to (e.g. ghcr.io/username/image). Leave empty to skip push."
+    required: false
+    default: ""
+  registry-username:
+    description: "Registry username for authentication"
+    required: false
+    default: ""
+  registry-password:
+    description: "Registry password or token for authentication"
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+  steps:
+    - name: Install dcli-bootc
+      run: |
+        sudo dnf install -y dcli-bootc cargo skopeo || true
+        if ! command -v dcli-bootc &> /dev/null; then
+          cargo install dcli-bootc
+        fi
+      shell: bash
+
+    - name: Run dcli-bootc ${{ inputs.command }}
+      run: |
+        cd ${{ inputs.project-path }}
+        ARGS="${{ inputs.command }}"
+        if [ -n "${{ inputs.host }}" ]; then
+          ARGS="$ARGS --host ${{ inputs.host }}"
+        fi
+        if [ "${{ inputs.force }}" = "true" ]; then
+          ARGS="$ARGS --force"
+        fi
+        if [ "${{ inputs.skip-build }}" = "true" ]; then
+          ARGS="$ARGS --skip-build"
+        fi
+        sudo dcli-bootc $ARGS
+      shell: bash
+
+    - name: Push to registry
+      if: ${{ inputs.registry != '' }}
+      run: |
+        cd ${{ inputs.project-path }}
+        IMAGE=$(dcli-bootc status --format json | jq -r '.image')
+        if [ -n "${{ inputs.registry-username }}" ]; then
+          echo "${{ inputs.registry-password }}" | skopeo login ${{ inputs.registry }} -u "${{ inputs.registry-username }}" --password-stdin
+        fi
+        skopeo copy containers-storage:$IMAGE docker://${{ inputs.registry }}:${{ inputs.command == 'build' && 'latest' || 'update' }}
+      shell: bash
