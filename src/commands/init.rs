@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::config::{Profile, Module, RepoConfig, Scripts, RemoteRpm};
+use crate::config::{PackageManager, Profile, Module, RepoConfig, Scripts, RemoteRpm};
 use crate::project;
 
 pub fn run(name: Option<String>, from: Option<String>, force: bool) -> Result<()> {
@@ -66,6 +66,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         nvidia_base_image: Some("ghcr.io/ublue-os/bazzite-nvidia-open:stable".to_string()),
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
+        package_manager: PackageManager::default(),
         dotfiles: vec![],
     };
     let profile_yaml = serde_yaml::to_string(&profile)?;
@@ -138,6 +139,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         nvidia_base_image: None,
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
+        package_manager: PackageManager::default(),
         dotfiles: vec![],
     };
     std::fs::write(
@@ -158,6 +160,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         repos: RepoConfig {
             copr: vec![],
             rpm_urls: vec![],
+            apt_lines: vec![],
             enable: enabled_repos,
             import_keys: repo_lines.clone(),
         },

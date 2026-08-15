@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::config::{PackageManager, Profile, RepoConfig};
+use crate::config::{PackageManager, Profile};
 use crate::module::{collect_flatpak_remotes, load_enabled_modules, ResolvedModule};
 
 /// Package-manager-specific shell commands
@@ -343,7 +343,7 @@ REPO"#,
         let apps: Vec<String> = m
             .flatpaks
             .iter()
-            .filter(|a| installed_flatpaks.insert(a.clone()))
+            .filter(|a| installed_flatpaks.insert(a.to_string()))
             .cloned()
             .collect();
         if !apps.is_empty() {
@@ -362,7 +362,7 @@ REPO"#,
         let removed: Vec<String> = m
             .remove_flatpaks
             .iter()
-            .filter(|a| removed_flatpaks.insert(a.clone()))
+            .filter(|a| removed_flatpaks.insert(a.to_string()))
             .cloned()
             .collect();
         if !removed.is_empty() {

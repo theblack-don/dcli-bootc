@@ -354,7 +354,7 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
 
                 for app in wanted_flatpaks
                     .iter()
-                    .filter(|a| wanted_flatpak_seen.insert(a.clone()))
+                    .filter(|a| wanted_flatpak_seen.insert(a.to_string()))
                 {
                     if !flatpak_installed.contains(app) {
                         problems.push(format!("flatpak missing from image: {}", app));
