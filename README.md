@@ -95,8 +95,8 @@ my-image/
 ## Configuration
 
 `profile.yaml` defines the base image and enabled modules. Each module in
-`modules/*.yaml` can declare packages, repos, remote RPMs, local RPMs, files,
-services, and inline scripts.
+`modules/*.yaml` can declare packages, repos, remote RPMs, local RPMs,
+flatpaks, files, services, and inline scripts.
 
 ## Multi-host
 
@@ -158,6 +158,43 @@ file in `rpms/` invalidates the customization layer via the build-input hash,
 and the post-build verification confirms each local RPM's package is actually
 installed. The `.gitignore` written by `init` already excludes `*.rpm`, so the
 binaries stay out of git.
+
+### Flatpaks
+
+Flatpaks are installed **system-wide into the image** at build time (like
+packages), so they ship with the image and survive rebases:
+
+```yaml
+# modules/apps.yaml
+flatpaks:
+  - org.mozilla.firefox
+  - com.obsproject.Studio
+remove_flatpaks:          # remove apps baked into the base image
+  - org.fedoraproject.MediaWriter
+```
+
+Installs come from the first configured remote — flathub by default, so no
+remote config is needed. To use another remote (or add flathub explicitly),
+declare remotes in any module; they are merged and deduplicated by name
+across all modules and added before any installs:
+
+```yaml
+flatpak_remotes:
+  - name: flathub
+    url: https://dl.flathub.org/repo/flathub.flatpakrepo
+  - name: fedora
+    url: https://dl.fedoraproject.org/pub/fedora/linux/stable/41/x86_64/flatpak-apps/
+```
+
+The generated `build.sh` runs `flatpak remote-add --if-not-exists --system`
+for each remote, then `flatpak install -y --or-update --system <remote>
+<app>` per module (deduplicated across modules; apps already baked into the
+base image are updated instead of failing) and
+`flatpak uninstall -y --system` for removals. The build plan lists them, and post-build verification boots
+the image and confirms each declared flatpak is present and each removal is
+gone — skipped with a warning when the base image has no `flatpak` binary.
+The base image must ship `flatpak` (bazzite and other desktop bases do);
+user-level flatpaks installed on the running system are not affected.
 
 ## Dotfiles
 

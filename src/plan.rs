@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::bootc;
 use crate::config;
-use crate::module::ResolvedModule;
+use crate::module::{collect_flatpak_remotes, ResolvedModule};
 
 /// Print everything the build will do, then (best-effort) what changed
 /// relative to the previously built image.
@@ -30,6 +30,22 @@ pub fn print_build_plan(
 
     for rm in modules {
         print_module_plan(project_dir, rm);
+    }
+
+    if modules.iter().any(|rm| !rm.module.flatpaks.is_empty()) {
+        let remotes = collect_flatpak_remotes(modules);
+        println!(
+            "  {}",
+            format!(
+                "flatpak remotes: {}",
+                remotes
+                    .iter()
+                    .map(|r| r.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+            .dimmed()
+        );
     }
 
     println!();
@@ -92,6 +108,23 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
     }
     if !m.files.is_empty() {
         lines.push(format!("files overlay: {}", m.files.join(", ")));
+    }
+    for remote in &m.flatpak_remotes {
+        lines.push(format!("flatpak remote: {} ({})", remote.name, remote.url));
+    }
+    if !m.flatpaks.is_empty() {
+        lines.push(format!(
+            "flatpak install ({}): {}",
+            m.flatpaks.len(),
+            m.flatpaks.join(", ")
+        ));
+    }
+    if !m.remove_flatpaks.is_empty() {
+        lines.push(format!(
+            "flatpak remove ({}): {}",
+            m.remove_flatpaks.len(),
+            m.remove_flatpaks.join(", ")
+        ));
     }
     if m.scripts.pre.is_some() {
         lines.push("script: pre".to_string());

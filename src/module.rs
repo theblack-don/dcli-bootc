@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::config::{self, Module};
+use crate::config::{self, FlatpakRemote, Module};
 
 /// Resolved module with its name
 pub struct ResolvedModule {
@@ -50,6 +50,26 @@ fn resolve_with_deps(
     });
 
     Ok(())
+}
+
+/// Flatpak remotes declared across all modules (deduped by name, order
+/// preserved). When none are declared, flathub is used as the default.
+pub fn collect_flatpak_remotes(modules: &[ResolvedModule]) -> Vec<FlatpakRemote> {
+    let mut remotes: Vec<FlatpakRemote> = Vec::new();
+    for rm in modules {
+        for remote in &rm.module.flatpak_remotes {
+            if !remotes.iter().any(|r| r.name == remote.name) {
+                remotes.push(remote.clone());
+            }
+        }
+    }
+    if remotes.is_empty() {
+        remotes.push(FlatpakRemote {
+            name: "flathub".to_string(),
+            url: "https://dl.flathub.org/repo/flathub.flatpakrepo".to_string(),
+        });
+    }
+    remotes
 }
 
 /// Validate modules for conflicts and integrity

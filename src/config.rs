@@ -161,6 +161,19 @@ pub struct Module {
     #[serde(default)]
     pub local_rpms: Vec<String>,
 
+    /// Flatpak remotes to add before installing flatpaks (deduped by name;
+    /// flathub is auto-added when none are declared)
+    #[serde(default)]
+    pub flatpak_remotes: Vec<FlatpakRemote>,
+
+    /// Flatpak apps to install system-wide into the image
+    #[serde(default)]
+    pub flatpaks: Vec<String>,
+
+    /// Flatpak apps to remove from the image
+    #[serde(default)]
+    pub remove_flatpaks: Vec<String>,
+
     /// Directories under files/ to rsync into the image
     #[serde(default)]
     pub files: Vec<String>,
@@ -225,6 +238,12 @@ pub struct RpmRepo {
     pub name: String,
     pub baseurl: String,
     pub gpgkey: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FlatpakRemote {
+    pub name: String,
+    pub url: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
