@@ -257,11 +257,13 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
     let mut unwanted: Vec<String> = Vec::new();
     let mut wanted_flatpaks: Vec<String> = Vec::new();
     let mut unwanted_flatpaks: Vec<String> = Vec::new();
+    let mut wanted_appimages: Vec<String> = Vec::new();
     for rm in &modules {
         wanted.extend(rm.module.packages.iter().cloned());
         unwanted.extend(rm.module.remove.iter().cloned());
         wanted_flatpaks.extend(rm.module.flatpaks.iter().cloned());
         unwanted_flatpaks.extend(rm.module.remove_flatpaks.iter().cloned());
+        wanted_appimages.extend(rm.module.appimages.iter().cloned());
         for entry in &rm.module.local_rpms {
             match plan::local_rpm_package_name(project_dir, entry) {
                 Some(name) => wanted.push(name),
@@ -277,6 +279,7 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
         && unwanted.is_empty()
         && wanted_flatpaks.is_empty()
         && unwanted_flatpaks.is_empty()
+        && wanted_appimages.is_empty()
     {
         return Ok(());
     }
@@ -378,17 +381,65 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
         }
     }
 
+    // ── AppImage verification ──
+    if !wanted_appimages.is_empty() {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("podman")
+            .arg("run")
+            .arg("--rm")
+            .arg(image_ref)
+            .arg("ls")
+            .arg("/usr/local/bin");
+
+        let output = cmd.output();
+        match output {
+            Ok(output) if output.status.success() => {
+                let installed: std::collections::HashSet<String> =
+                    String::from_utf8_lossy(&output.stdout)
+                        .lines()
+                        .map(|line| line.trim().to_string())
+                        .collect();
+
+                for entry in &wanted_appimages {
+                    let bin_name = std::path::Path::new(entry)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_else(|| entry.clone());
+                    if !installed.contains(&bin_name) {
+                        problems.push(format!(
+                            "appimage missing from /usr/local/bin: {}",
+                            bin_name
+                        ));
+                    }
+                }
+            }
+            Ok(_) => println!(
+                "  {} Could not verify appimages (could not list /usr/local/bin in the image) — skipping check",
+                "!".yellow()
+            ),
+            Err(e) => println!(
+                "  {} Could not verify appimages: {} — skipping check",
+                "!".yellow(),
+                e
+            ),
+        }
+    }
+
     if problems.is_empty() {
         println!(
             "{} Verified: {} package(s) present, {} removal(s) confirmed{}",
             "✓".green(),
             wanted.len(),
             unwanted.len(),
-            if !wanted_flatpaks.is_empty() || !unwanted_flatpaks.is_empty() {
+            if !wanted_flatpaks.is_empty()
+                || !unwanted_flatpaks.is_empty()
+                || !wanted_appimages.is_empty()
+            {
                 format!(
-                    ", {} flatpak(s) present, {} flatpak removal(s) confirmed",
+                    ", {} flatpak(s) present, {} flatpak removal(s) confirmed, {} appimage(s) installed",
                     wanted_flatpaks.len(),
-                    unwanted_flatpaks.len()
+                    unwanted_flatpaks.len(),
+                    wanted_appimages.len()
                 )
             } else {
                 String::new()

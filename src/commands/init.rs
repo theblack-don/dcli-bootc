@@ -57,6 +57,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
     std::fs::create_dir_all(project_dir.join("rpms"))?;
+    std::fs::create_dir_all(project_dir.join("appimages"))?;
     std::fs::create_dir_all(project_dir.join("dotfiles"))?;
 
     // Write profile.yaml
@@ -78,6 +79,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         // dcli-bootc itself, so the tool persists in the image across
         // rebuilds (host-installed packages are lost on rebase).
         packages: vec!["tmux".to_string(), "dcli-bootc".to_string()],
+        groups: vec![],
         remove: vec![],
         repos: RepoConfig {
             copr: vec!["theblackdon/dcli-bootc".to_string()],
@@ -85,6 +87,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         },
         remote_rpms: vec![],
         local_rpms: vec![],
+        appimages: vec![],
         flatpak_remotes: vec![],
         flatpaks: vec![],
         remove_flatpaks: vec![],
@@ -98,7 +101,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     std::fs::write(project_dir.join("modules").join("base.yaml"), &module_yaml)?;
 
     // Write .gitignore
-    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n")?;
+    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n*.AppImage\n*.appimage\n")?;
 
     Ok(())
 }
@@ -130,6 +133,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     std::fs::create_dir_all(project_dir.join("files"))?;
     std::fs::create_dir_all(project_dir.join("build_files"))?;
     std::fs::create_dir_all(project_dir.join("rpms"))?;
+    std::fs::create_dir_all(project_dir.join("appimages"))?;
     std::fs::create_dir_all(project_dir.join("dotfiles"))?;
 
     // Write profile
@@ -156,6 +160,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     let base_module = Module {
         description: format!("Imported from {}", containerfile.display()),
         packages: install_pkgs,
+        groups: vec![],
         remove: remove_pkgs,
         repos: RepoConfig {
             copr: vec![],
@@ -166,6 +171,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         },
         remote_rpms: extract_remote_rpms(&content),
         local_rpms: vec![],
+        appimages: vec![],
         flatpak_remotes: vec![],
         flatpaks: vec![],
         remove_flatpaks: vec![],
@@ -187,7 +193,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     }
 
     // Write .gitignore
-    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n")?;
+    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n*.AppImage\n*.appimage\n")?;
 
     println!(
         "{} Imported project from {}",

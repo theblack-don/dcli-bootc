@@ -87,6 +87,13 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
             m.packages.join(", ")
         ));
     }
+    if !m.groups.is_empty() {
+        lines.push(format!(
+            "install group ({}): {}",
+            m.groups.len(),
+            m.groups.join(", ")
+        ));
+    }
     for rpm in &m.remote_rpms {
         let filename = rpm.filename.clone().unwrap_or_else(|| {
             rpm.url
@@ -105,6 +112,15 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
             Some(name) => lines.push(format!("local rpm: {} [{}, {}]", name, entry, size)),
             None => lines.push(format!("local rpm: {} [{}]", entry, size)),
         }
+    }
+    for entry in &m.appimages {
+        let size = std::fs::metadata(project_dir.join("appimages").join(entry))
+            .map(|md| format_size(md.len()))
+            .unwrap_or_else(|_| "missing file!".to_string());
+        lines.push(format!(
+            "appimage -> /usr/local/bin/{} [{}]",
+            entry, size
+        ));
     }
     if !m.files.is_empty() {
         lines.push(format!("files overlay: {}", m.files.join(", ")));

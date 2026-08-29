@@ -54,10 +54,12 @@ pub fn generate(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Re
     let modules = load_enabled_modules(project_dir, &profile.enabled_modules)?;
 
     validate_local_rpms(project_dir, &modules)?;
+    validate_local_appimages(project_dir, &modules)?;
     crate::dotfiles::validate(project_dir, &profile.dotfiles)?;
 
     let has_local_rpms = modules.iter().any(|rm| !rm.module.local_rpms.is_empty());
-    let containerfile = generate_containerfile(profile, has_local_rpms);
+    let has_local_appimages = modules.iter().any(|rm| !rm.module.appimages.is_empty());
+    let containerfile = generate_containerfile(profile, has_local_rpms, has_local_appimages);
     let build_sh = generate_build_sh(profile, &modules, host);
 
     Ok(GeneratedFiles {
@@ -97,17 +99,54 @@ fn validate_local_rpms(project_dir: &Path, modules: &[ResolvedModule]) -> Result
     Ok(())
 }
 
-fn generate_containerfile(profile: &Profile, has_local_rpms: bool) -> String {
-    // COPY of a missing directory fails the build, so rpms/ is only copied
-    // when a module actually declares local_rpms.
+/// Ensure every declared local AppImage is a plain relative filename and
+/// exists in the project's appimages/ directory — fail at gen time instead of
+/// mid-build.
+fn validate_local_appimages(project_dir: &Path, modules: &[ResolvedModule]) -> Result<()> {
+    for rm in modules {
+        for entry in &rm.module.appimages {
+            let rel = Path::new(entry);
+            if rel.is_absolute()
+                || rel
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+            {
+                anyhow::bail!(
+                    "Module '{}' declares appimages entry '{}' — entries must be filenames relative to the project's appimages/ directory",
+                    rm.name,
+                    entry
+                );
+            }
+            let path = project_dir.join("appimages").join(entry);
+            if !path.is_file() {
+                anyhow::bail!(
+                    "Module '{}' declares appimages entry '{}' but '{}' does not exist — put the AppImage file in the project's appimages/ directory",
+                    rm.name,
+                    entry,
+                    path.display()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn generate_containerfile(profile: &Profile, has_local_rpms: bool, has_local_appimages: bool) -> String {
+    // COPY of a missing directory fails the build, so these are only copied
+    // when a module actually declares local files.
     let copy_rpms = if has_local_rpms { "COPY rpms /rpms\n" } else { "" };
+    let copy_appimages = if has_local_appimages {
+        "COPY appimages /appimages\n"
+    } else {
+        ""
+    };
     format!(
         r#"ARG BASE_IMAGE={0}
 
 FROM scratch AS ctx
 COPY build_files /
 COPY files /files
-{1}
+{1}{2}
 FROM ${{BASE_IMAGE}}
 
 # Cache-bust: dcli-bootc passes a content hash of build_files/ and files/ as
@@ -123,7 +162,7 @@ RUN --mount=type=bind,from=ctx,source=/,target=/ctx \
 
 RUN bootc container lint
 "#,
-        profile.base_image, copy_rpms
+        profile.base_image, copy_rpms, copy_appimages
     )
 }
 
@@ -168,8 +207,11 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
             || !m.repos.import_keys.is_empty()
             || !m.repos.apt_lines.is_empty();
         let has_remove = !m.remove.is_empty();
-        let has_install =
-            !m.packages.is_empty() || !m.remote_rpms.is_empty() || !m.local_rpms.is_empty();
+        let has_install = !m.packages.is_empty()
+            || !m.groups.is_empty()
+            || !m.remote_rpms.is_empty()
+            || !m.local_rpms.is_empty()
+            || !m.appimages.is_empty();
         let has_files = !m.files.is_empty();
         let has_scripts = m.scripts.pre.is_some() || m.scripts.post.is_some();
         let has_services = !m.services.is_empty() || !m.first_boot_services.is_empty();
@@ -289,6 +331,13 @@ REPO"#,
             lines.push(format!("{} \\\n    {}", pm.install, pkgs));
         }
 
+        // ── Install dnf package groups ──
+        if !m.groups.is_empty() && matches!(profile.package_manager, PackageManager::Dnf) {
+            let groups = m.groups.join(" \\\n    ");
+            lines.push(String::new());
+            lines.push(format!("dnf group install -y \\\n    {}", groups));
+        }
+
         // ── Remote RPMs ──
         for rpm in &m.remote_rpms {
             let filename = rpm
@@ -337,6 +386,33 @@ REPO"#,
                 pm.install,
                 rpm_files.join(" \\\n    ")
             ));
+        }
+
+        // ── AppImages (from the project's appimages/ directory, via the ctx mount) ──
+        for entry in &m.appimages {
+            let bin_name = Path::new(entry)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| entry.clone());
+            lines.push(String::new());
+            lines.push(format!("# AppImage: {}", bin_name));
+            lines.push(format!(
+                "install -Dm0755 /ctx/appimages/{} /usr/local/bin/{}",
+                entry, bin_name
+            ));
+            lines.push("# Extract desktop integration (.desktop + icons)".to_string());
+            lines.push("TMPDIR=$(mktemp -d)".to_string());
+            lines.push("cd \"$TMPDIR\"".to_string());
+            lines.push(format!(
+                "/ctx/appimages/{} --appimage-extract >/dev/null 2>&1 && {{",
+                entry
+            ));
+            lines.push("    desktop=$(find squashfs-root -maxdepth 2 -name '*.desktop' | head -n1)".to_string());
+            lines.push("    [ -n \"$desktop\" ] && install -Dm0644 \"$desktop\" /usr/share/applications/".to_string());
+            lines.push("    find squashfs-root -maxdepth 3 -type f \\( -name '*.png' -o -name '*.svg' -o -name '*.ico' \\) -exec install -Dm0644 {} /usr/share/icons/hicolor/ \\; 2>/dev/null || true".to_string());
+            lines.push("}".to_string());
+            lines.push("rm -rf \"$TMPDIR\"".to_string());
+            lines.push("cd /".to_string());
         }
 
         // ── Flatpaks (system-wide into the image) ──

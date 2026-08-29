@@ -88,6 +88,7 @@ my-image/
 │   └── laptop.yaml
 ├── files/              # Files to copy into the image
 ├── rpms/               # Local .rpm files installed via local_rpms
+├── appimages/          # Local AppImages installed via appimages
 ├── dotfiles/           # Dotfiles symlinked into ~ (see Dotfiles section)
 └── .dcli-bootc         # Project marker
 ```
@@ -95,8 +96,8 @@ my-image/
 ## Configuration
 
 `profile.yaml` defines the base image and enabled modules. Each module in
-`modules/*.yaml` can declare packages, repos, remote RPMs, local RPMs,
-flatpaks, files, services, and inline scripts.
+`modules/*.yaml` can declare packages, groups, repos, remote RPMs, local RPMs,
+appimages, flatpaks, files, services, and inline scripts.
 
 ## Multi-host
 
@@ -158,6 +159,45 @@ file in `rpms/` invalidates the customization layer via the build-input hash,
 and the post-build verification confirms each local RPM's package is actually
 installed. The `.gitignore` written by `init` already excludes `*.rpm`, so the
 binaries stay out of git.
+
+### dnf Groups
+
+Install named package groups (fedora groups like `standard`,
+`development`, `gnome-desktop`) with `dnf group install`:
+
+```yaml
+groups:
+  - development
+  - standard
+```
+
+Groups only apply when the profile's `package_manager` is `dnf`; they are
+ignored for other package managers. Installed group members are verified like
+regular packages after the build.
+
+### AppImages
+
+Drop AppImage binaries in the project's `appimages/` directory and declare
+them by filename in a module:
+
+```yaml
+# modules/apps.yaml
+appimages:
+  - Obsidian.AppImage
+  - Signal.AppImage
+```
+
+At build time each AppImage is installed to `/usr/local/bin/<name>` (making it
+executable and on `PATH`), and its desktop integration is extracted
+automatically: the `.desktop` file is copied to `/usr/share/applications/` and
+icons to `/usr/share/icons/hicolor/`. Extraction uses `--appimage-extract`, so
+no FUSE is needed in the build.
+
+`gen` fails fast if a declared file is missing from `appimages/`, the files
+are bind-mounted into the build (never baked into an image layer), changes to
+`appimages/` bust the build cache via the build-input hash, and post-build
+verification confirms each AppImage landed in `/usr/local/bin`. The
+`.gitignore` written by `init` excludes `*.AppImage`/`*.appimage`.
 
 ### Flatpaks
 

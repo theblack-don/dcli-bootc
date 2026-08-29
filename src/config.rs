@@ -148,6 +148,10 @@ pub struct Module {
     #[serde(default)]
     pub packages: Vec<String>,
 
+    /// Package groups to install (dnf groups, e.g. "standard", "development")
+    #[serde(default)]
+    pub groups: Vec<String>,
+
     #[serde(default)]
     pub remove: Vec<String>,
 
@@ -160,6 +164,10 @@ pub struct Module {
     /// Filenames of RPMs shipped in the project's rpms/ directory
     #[serde(default)]
     pub local_rpms: Vec<String>,
+
+    /// Filenames of AppImages shipped in the project's appimages/ directory
+    #[serde(default)]
+    pub appimages: Vec<String>,
 
     /// Flatpak remotes to add before installing flatpaks (deduped by name;
     /// flathub is auto-added when none are declared)
