@@ -7,6 +7,13 @@ package_manager: dnf
 enabled_modules:
   - base
 
+# RakuOS only: module that holds the live `rum` usr-overlay manifest. Do NOT
+# add it to enabled_modules — its packages are installed/removed in the
+# overlay with rum (not baked into the image). `dcli-bootc overlay import`
+# snapshots the overlay into it; build/update and `overlay sync` reconcile the
+# overlay to match it.
+# overlay_module: overlay
+
 # Dotfiles from dotfiles/, symlinked into your home on build/update (or with
 # `dcli-bootc dotfiles`). Plain entries target ~/.config/<name>; use a
 # single-key map for files that live elsewhere:

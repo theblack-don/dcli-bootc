@@ -131,6 +131,13 @@ pub fn run(
         }
     }
 
+    // ── Reconcile the RakuOS usr-overlay with the modules: packages deleted
+    // from a module are uninstalled from the host overlay with rum. No-op on
+    // non-RakuOS hosts or projects without overlay_module.
+    if let Err(e) = crate::commands::overlay::sync(project_dir, &profile, force, false, false) {
+        eprintln!("{} Overlay sync failed: {:#}", "!".yellow(), e);
+    }
+
     if let (Some(built), Ok(bootc_status)) = (&built_digest, bootc::status()) {
         if let Some(booted) = &bootc_status.booted_digest {
             if booted == built {

@@ -51,6 +51,15 @@ pub struct GeneratedFiles {
 /// the generated output — which both triggers drift regeneration in `build`
 /// and busts the podman layer cache via the build-input hash.
 pub fn generate(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Result<GeneratedFiles> {
+    if let Some(om) = &profile.overlay_module {
+        if profile.enabled_modules.contains(om) {
+            eprintln!(
+                "Warning: overlay_module '{}' is in enabled_modules — RakuOS overlay packages are installed with rum into the live overlay, not baked into the image. Remove it from enabled_modules to avoid baking them too.",
+                om
+            );
+        }
+    }
+
     let modules = load_enabled_modules(project_dir, &profile.enabled_modules)?;
 
     validate_local_rpms(project_dir, &modules)?;

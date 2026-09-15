@@ -50,6 +50,14 @@ pub struct Profile {
     /// invoking user's home (host-side, on build/update or `dcli-bootc dotfiles`)
     #[serde(default)]
     pub dotfiles: Vec<DotfileEntry>,
+
+    /// Module that holds the RakuOS `rum` usr-overlay manifest (e.g. "overlay").
+    /// When set, `dcli-bootc overlay import` snapshots the host overlay into
+    /// that module, and build/update/`overlay sync` reconcile the live overlay
+    /// to match it with `rum install`/`rum remove`. The module is overlay-only
+    /// and should not be in `enabled_modules` (it is not baked into the image).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overlay_module: Option<String>,
 }
 
 /// A single dotfiles entry.

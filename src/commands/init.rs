@@ -69,6 +69,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         enabled_modules: vec!["base".to_string()],
         package_manager: PackageManager::default(),
         dotfiles: vec![],
+        overlay_module: None,
     };
     let profile_yaml = serde_yaml::to_string(&profile)?;
     std::fs::write(project_dir.join("profile.yaml"), &profile_yaml)?;
@@ -145,6 +146,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         enabled_modules: vec!["base".to_string()],
         package_manager: PackageManager::default(),
         dotfiles: vec![],
+        overlay_module: None,
     };
     std::fs::write(
         project_dir.join("profile.yaml"),

@@ -5,6 +5,7 @@ mod dotfiles;
 mod generator;
 mod hash;
 mod module;
+mod overlay;
 mod plan;
 mod project;
 mod registry;
@@ -127,6 +128,40 @@ enum Commands {
 
     /// Apply profile dotfiles into ~ as symlinks (also runs on build/update)
     Dotfiles,
+
+    /// Manage the RakuOS usr-overlay (rum) that backs a module
+    Overlay {
+        #[command(subcommand)]
+        action: OverlayAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum OverlayAction {
+    /// Snapshot overlay-installed packages into the project's overlay module
+    Import {
+        /// Show what would be written without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Overwrite an existing module that already declares packages
+        #[arg(short, long)]
+        force: bool,
+    },
+
+    /// Remove overlay packages that are no longer declared in any module
+    Sync {
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+
+        /// Show what would be removed without removing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Show drift between the host overlay and the project's modules
+    Status,
 }
 
 fn main() -> Result<()> {
@@ -186,6 +221,22 @@ fn main() -> Result<()> {
                 Commands::Dotfiles => {
                     commands::dotfiles::run(&project_path, cli.host)?;
                 }
+                Commands::Overlay { action } => match action {
+                    OverlayAction::Import { dry_run, force } => {
+                        commands::overlay::import(&project_path, dry_run, force)?;
+                    }
+                    OverlayAction::Sync { force, dry_run } => {
+                        commands::overlay::sync_command(
+                            &project_path,
+                            force,
+                            dry_run,
+                            cli.host.as_deref(),
+                        )?;
+                    }
+                    OverlayAction::Status => {
+                        commands::overlay::status(&project_path, cli.host.as_deref())?;
+                    }
+                },
             }
         }
     }

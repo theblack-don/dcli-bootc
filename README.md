@@ -60,6 +60,7 @@ sudo dnf install dcli-bootc    # gone after the next reboot
 | `rollback` | Roll back to the previous bootc deployment |
 | `update`| Pull the latest base image, rebuild, and switch to the fresh build |
 | `status`| Show bootc deployment status and project info |
+| `overlay` | Import / sync the RakuOS `rum` usr-overlay with a module (RakuOS hosts only) |
 | `dotfiles` | Apply profile dotfiles into ~ as symlinks (also runs on build/update) |
 
 ## Quickstart
@@ -235,6 +236,63 @@ the image and confirms each declared flatpak is present and each removal is
 gone — skipped with a warning when the base image has no `flatpak` binary.
 The base image must ship `flatpak` (bazzite and other desktop bases do);
 user-level flatpaks installed on the running system are not affected.
+
+## RakuOS (rum usr-overlay)
+
+RakuOS mounts a persistent overlayfs over `/usr`, and its `rum` package
+manager installs packages into it live (`rum install`). That is the point of
+RakuOS: they are installed in real time, survive image updates, and are not
+baked into the image. dcli-bootc keeps them that way — it just makes the set
+declarative instead of clicking through the software center.
+
+Point the profile at a module that holds the overlay manifest. Do **not** add
+it to `enabled_modules` — its packages belong in the overlay, not the image:
+
+```yaml
+# profile.yaml
+enabled_modules:
+  - base
+overlay_module: overlay      # NOT enabled_modules — rum-managed, overlay-only
+```
+
+Then snapshot what `rum` has installed into that module:
+
+```bash
+# writes the overlay-installed packages into modules/overlay.yaml
+dcli-bootc overlay import
+```
+
+`import` reads `/var/lib/rakuos/packages.list` (the packages you asked `rum`
+for, not the dependency closure) and merges them into the module, preserving
+any other keys already there (`description`, `scripts`, ...). It refuses to
+clobber a module that already declares packages unless you pass `--force`.
+
+From then on the module is the manifest for the live overlay. `build`,
+`update`, and `overlay sync` reconcile the host overlay with `rum` — no
+software center, no manual `rum` commands:
+
+* packages **added to the module** are `rum install`ed into the overlay;
+* packages **removed from the module** are `rum remove`d from the overlay.
+
+```bash
+dcli-bootc overlay status          # what would be installed / removed
+dcli-bootc overlay sync            # apply it now, without rebuilding the image
+dcli-bootc overlay sync --dry-run  # show what would change
+```
+
+`build` and `update` run the same sync after a successful image build, so a
+rebuild also brings the live overlay in line with the manifest.
+
+Locally sideloaded RPMs tracked in `/var/lib/rakuos/packages-rpm.list` cannot
+be reproduced from a repo; `import` prints them so you can declare them as
+`local_rpms`/`remote_rpms` instead (see [Local RPMs](#local-rpms)).
+
+These commands are no-ops on hosts without `rum`, and on projects without
+`overlay_module`, so non-RakuOS projects are unaffected. If you do add the
+manifest module to `enabled_modules`, `gen`/`build` warn: its packages would
+then be baked into the image as well as installed in the overlay.
+
+## Dotfiles
 
 ## Dotfiles
 
