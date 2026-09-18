@@ -6,6 +6,32 @@ Containerfile and build the image.
 
 ## Installing from COPR
 
+### RakuOS (rum usr-overlay) — recommended
+
+RakuOS does not need an rpm-ostree layer or a rebuilt image: its `rum`
+package manager installs into the live `/usr` overlay, so `dcli-bootc` goes in
+like any other package and survives image updates.
+
+```bash
+sudo rum copr enable theblackdon/dcli-bootc   # chroot auto-detected from os-release
+sudo rum install dcli-bootc
+```
+
+No reboot and no image rebuild — the command is available immediately. Useful
+follow-ups:
+
+```bash
+rum origin dcli-bootc      # confirm it's Overlay (not Base)
+rum upgrade dcli-bootc     # update to the newest COPR build
+rum remove dcli-bootc      # uninstall
+```
+
+The install is per-machine and lives in the overlay, so it is not baked into
+your image and won't exist on another RakuOS box until you run the same two
+commands there. If you would rather have it inside the image (so every
+rebuild/rebase carries it), add it to an enabled module as in Option 1 below
+instead — the overlay and image copies coexist fine.
+
 ### Atomic / bootc distros (Bazzite, Silverblue, Kinoite, Bluefin, Aurora)
 
 `dnf install` does not work on the live host (`/usr` is read-only), and
@@ -247,7 +273,9 @@ RakuOS mounts a persistent overlayfs over `/usr`, and its `rum` package
 manager installs packages into it live (`rum install`). That is the point of
 RakuOS: they are installed in real time, survive image updates, and are not
 baked into the image. dcli-bootc keeps them that way — it just makes the set
-declarative instead of clicking through the software center.
+declarative instead of clicking through the software center. (Install
+`dcli-bootc` itself with `rum` — see
+[Installing from COPR](#rakuos-rum-usr-overlay--recommended).)
 
 Point the profile at a module that holds the overlay manifest. Do **not** add
 it to `enabled_modules` — its packages belong in the overlay, not the image:
