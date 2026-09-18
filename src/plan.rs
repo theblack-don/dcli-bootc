@@ -142,6 +142,20 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
             m.remove_flatpaks.join(", ")
         ));
     }
+    if !m.user_flatpaks.is_empty() {
+        lines.push(format!(
+            "user flatpak install ({}): {} (host-side, flatpak --user)",
+            m.user_flatpaks.len(),
+            m.user_flatpaks.join(", ")
+        ));
+    }
+    if !m.user_remove_flatpaks.is_empty() {
+        lines.push(format!(
+            "user flatpak remove ({}): {}",
+            m.user_remove_flatpaks.len(),
+            m.user_remove_flatpaks.join(", ")
+        ));
+    }
     if m.scripts.pre.is_some() {
         lines.push("script: pre".to_string());
     }

@@ -29,3 +29,8 @@ exclude_modules: []
 
 # Optional package manager override (dnf, apt, zypper, pacman)
 # package_manager: apt
+
+# RakuOS only: override the profile's overlay_module so this machine
+# reconciles its live usr-overlay against its own module. Keep overlay
+# modules out of `modules:` above — they are rum-managed, not image-baked.
+# overlay_module: overlay-desktop

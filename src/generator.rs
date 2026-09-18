@@ -475,8 +475,11 @@ REPO"#,
         }
 
         // ── Services (always-on) ──
+        // --force so a service that aliases a name the base image already
+        // claims (e.g. display-manager.service) can take it over instead of
+        // systemctl refusing to overwrite the existing symlink.
         for svc in &m.services {
-            lines.push(format!("systemctl enable {}", svc));
+            lines.push(format!("systemctl enable --force {}", svc));
         }
 
         // ── First-boot services (ConditionPathExists guard) ──
@@ -498,7 +501,7 @@ REPO"#,
                     unit_name, cond_path
                 ));
             }
-            lines.push(format!("systemctl enable {}", unit_name));
+            lines.push(format!("systemctl enable --force {}", unit_name));
         }
     }
 

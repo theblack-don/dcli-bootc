@@ -138,6 +138,13 @@ pub fn run(
         eprintln!("{} Overlay sync failed: {:#}", "!".yellow(), e);
     }
 
+    // ── Reconcile the invoking user's flatpak installation with the modules'
+    // `user_flatpaks:` (host-side; user-scoped apps are never baked into the
+    // image). No-op when flatpak is absent or nothing is declared.
+    if let Err(e) = crate::flatpak::sync(project_dir, &profile, force, false, false) {
+        eprintln!("{} User flatpak sync failed: {:#}", "!".yellow(), e);
+    }
+
     if let (Some(built), Ok(bootc_status)) = (&built_digest, bootc::status()) {
         if let Some(booted) = &bootc_status.booted_digest {
             if booted == built {

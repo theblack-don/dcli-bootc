@@ -92,6 +92,9 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         flatpak_remotes: vec![],
         flatpaks: vec![],
         remove_flatpaks: vec![],
+        user_flatpak_remotes: vec![],
+        user_flatpaks: vec![],
+        user_remove_flatpaks: vec![],
         files: vec![],
         services: vec!["bootc-fetch-apply-updates.timer".to_string()],
         first_boot_services: vec![],
@@ -177,6 +180,9 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         flatpak_remotes: vec![],
         flatpaks: vec![],
         remove_flatpaks: vec![],
+        user_flatpak_remotes: vec![],
+        user_flatpaks: vec![],
+        user_remove_flatpaks: vec![],
         files: extract_copy_files(&content),
         services: extract_services(&content),
         first_boot_services: vec![],
@@ -459,7 +465,8 @@ fn extract_services(content: &str) -> Vec<String> {
             if let Some(svc) = line.split("systemctl enable").nth(1) {
                 for s in svc.split_whitespace() {
                     let s = s.trim();
-                    if !s.is_empty() && s != "&&" {
+                    // Skip shell glue and systemctl flags (e.g. --force).
+                    if !s.is_empty() && s != "&&" && !s.starts_with('-') {
                         services.push(s.to_string());
                     }
                 }

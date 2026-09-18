@@ -2,6 +2,7 @@ mod bootc;
 mod commands;
 mod config;
 mod dotfiles;
+mod flatpak;
 mod generator;
 mod hash;
 mod module;
@@ -134,6 +135,12 @@ enum Commands {
         #[command(subcommand)]
         action: OverlayAction,
     },
+
+    /// Manage user-scoped Flatpaks declared in modules
+    Flatpak {
+        #[command(subcommand)]
+        action: FlatpakAction,
+    },
 }
 
 #[derive(Subcommand)]
@@ -161,6 +168,51 @@ enum OverlayAction {
     },
 
     /// Show drift between the host overlay and the project's modules
+    Status,
+
+    /// Remove from the overlay module any packages the booted base image
+    /// already provides
+    Prune {
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+
+        /// Show what would be pruned without writing
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Rewrite the live overlay's package lists to match the module, then
+    /// offer to run 'rakuos reset-overlay --soft'
+    Clean {
+        /// Show what would change without writing
+        #[arg(long)]
+        dry_run: bool,
+
+        /// Skip the confirmation prompts (includes running the reset)
+        #[arg(short, long)]
+        force: bool,
+
+        /// Never offer to run 'rakuos reset-overlay --soft'
+        #[arg(long)]
+        no_reset: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum FlatpakAction {
+    /// Install/update declared user_flatpaks with `flatpak --user`
+    Sync {
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+
+        /// Show what would change without touching the user flatpak installation
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Show drift between declared user_flatpaks and the live user installation
     Status,
 }
 
@@ -223,7 +275,12 @@ fn main() -> Result<()> {
                 }
                 Commands::Overlay { action } => match action {
                     OverlayAction::Import { dry_run, force } => {
-                        commands::overlay::import(&project_path, dry_run, force)?;
+                        commands::overlay::import(
+                            &project_path,
+                            dry_run,
+                            force,
+                            cli.host.as_deref(),
+                        )?;
                     }
                     OverlayAction::Sync { force, dry_run } => {
                         commands::overlay::sync_command(
@@ -235,6 +292,40 @@ fn main() -> Result<()> {
                     }
                     OverlayAction::Status => {
                         commands::overlay::status(&project_path, cli.host.as_deref())?;
+                    }
+                    OverlayAction::Prune { force, dry_run } => {
+                        commands::overlay::prune(
+                            &project_path,
+                            dry_run,
+                            force,
+                            cli.host.as_deref(),
+                        )?;
+                    }
+                    OverlayAction::Clean {
+                        dry_run,
+                        force,
+                        no_reset,
+                    } => {
+                        commands::overlay::clean(
+                            &project_path,
+                            dry_run,
+                            force,
+                            no_reset,
+                            cli.host.as_deref(),
+                        )?;
+                    }
+                },
+                Commands::Flatpak { action } => match action {
+                    FlatpakAction::Sync { force, dry_run } => {
+                        flatpak::sync_command(
+                            &project_path,
+                            force,
+                            dry_run,
+                            cli.host.as_deref(),
+                        )?;
+                    }
+                    FlatpakAction::Status => {
+                        flatpak::status_command(&project_path, cli.host.as_deref())?;
                     }
                 },
             }

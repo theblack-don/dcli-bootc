@@ -146,6 +146,12 @@ pub struct HostConfig {
     /// Optional package manager override for this host
     #[serde(default)]
     pub package_manager: Option<PackageManager>,
+
+    /// Optional RakuOS `rum` usr-overlay manifest module override for this
+    /// host. Lets each machine reconcile its live overlay against its own
+    /// module instead of the profile's shared `overlay_module`.
+    #[serde(default)]
+    pub overlay_module: Option<String>,
 }
 
 /// A single module definition loaded from modules/*.yaml
@@ -189,6 +195,20 @@ pub struct Module {
     /// Flatpak apps to remove from the image
     #[serde(default)]
     pub remove_flatpaks: Vec<String>,
+
+    /// Flatpak remotes for user-scoped apps, added with
+    /// `flatpak remote-add --user` on the live system
+    #[serde(default)]
+    pub user_flatpak_remotes: Vec<FlatpakRemote>,
+
+    /// Flatpak apps to install into the invoking user's flatpak installation
+    /// on the live system (not baked into the image)
+    #[serde(default)]
+    pub user_flatpaks: Vec<String>,
+
+    /// Flatpak apps to remove from the invoking user's flatpak installation
+    #[serde(default)]
+    pub user_remove_flatpaks: Vec<String>,
 
     /// Directories under files/ to rsync into the image
     #[serde(default)]
@@ -504,6 +524,9 @@ pub fn resolve_effective_profile(
     }
     if let Some(pm) = host_cfg.package_manager {
         profile.package_manager = pm;
+    }
+    if let Some(om) = host_cfg.overlay_module {
+        profile.overlay_module = Some(om);
     }
 
     Ok((profile, Some(host_name)))

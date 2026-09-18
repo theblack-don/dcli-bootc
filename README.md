@@ -120,6 +120,10 @@ exclude_modules:         # removed from the profile's list (optional)
   - tlp
 
 base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable   # optional override
+
+# RakuOS only: use this host's own rum usr-overlay manifest instead of the
+# profile's `overlay_module`. The module lives in modules/ like any other.
+overlay_module: overlay-desktop
 ```
 
 The active host is chosen by the global `--host <name>` flag, or
@@ -255,6 +259,22 @@ enabled_modules:
 overlay_module: overlay      # NOT enabled_modules — rum-managed, overlay-only
 ```
 
+For a project that builds for several machines, give each `hosts/<name>.yaml`
+its own `overlay_module` so the two live overlays never reconcile against each
+other (each machine has a separate `/var/lib/rakuos/packages.list`; only the
+manifest is shared). A host without `overlay_module` falls back to the
+profile's:
+
+```yaml
+# hosts/desktop.yaml
+overlay_module: overlay-desktop
+# hosts/laptop.yaml
+overlay_module: overlay-laptop
+```
+
+Then `overlay import` / `sync` / `status` / `prune` / `clean` act on the active
+host's module (auto-detected from the hostname, or chosen with `--host`).
+
 Then snapshot what `rum` has installed into that module:
 
 ```bash
@@ -272,7 +292,13 @@ From then on the module is the manifest for the live overlay. `build`,
 software center, no manual `rum` commands:
 
 * packages **added to the module** are `rum install`ed into the overlay;
-* packages **removed from the module** are `rum remove`d from the overlay.
+* packages **removed from the module** are `rum remove`d from the overlay —
+  except packages the base image provides (declared by `enabled_modules` or
+  already present in the booted image), which are **kept**. Removing those
+  with `rum` would unlink through the merged `/usr` and leave an overlayfs
+  whiteout hiding the base image's copy, so `sync` leaves them in place and
+  reports them. To shed such a duplicate cleanly, drop it from the overlay
+  module/`packages.list` and run `rakuos reset-overlay --soft`.
 
 ```bash
 dcli-bootc overlay status          # what would be installed / removed
@@ -282,6 +308,21 @@ dcli-bootc overlay sync --dry-run  # show what would change
 
 `build` and `update` run the same sync after a successful image build, so a
 rebuild also brings the live overlay in line with the manifest.
+
+Once a package has been baked into *and booted from* the base image it no
+longer needs to live in the overlay module. `prune` drops those:
+
+```bash
+dcli-bootc overlay prune            # drop base-provided packages from the module
+dcli-bootc overlay prune --dry-run  # show what would be dropped
+```
+
+It counts only packages the **currently booted** base image provides (queried
+from its own rpmdb), never one that is merely declared in `enabled_modules` but
+hasn't booted yet — so it can't prune something you don't actually have. The
+live overlay copies are left untouched (removing them with `rum` would hide the
+base image's copies with overlayfs whiteouts); run `rakuos reset-overlay
+--soft` afterwards to reclaim the overlay space.
 
 Locally sideloaded RPMs tracked in `/var/lib/rakuos/packages-rpm.list` cannot
 be reproduced from a repo; `import` prints them so you can declare them as
