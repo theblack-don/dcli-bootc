@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::config::{PackageManager, Profile};
+use crate::config::{KernelConfig, PackageManager, Profile, RepoConfig};
 use crate::module::{collect_flatpak_remotes, load_enabled_modules, ResolvedModule};
 
 /// Package-manager-specific shell commands
@@ -58,6 +58,10 @@ pub fn generate(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Re
                 om
             );
         }
+    }
+
+    if let Some(kernel) = &profile.kernel {
+        validate_kernel(profile, kernel)?;
     }
 
     let modules = load_enabled_modules(project_dir, &profile.enabled_modules)?;
@@ -201,6 +205,11 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         }
     }
 
+    // ── Kernel management (foundational: before any module section) ──
+    if let Some(kernel) = &profile.kernel {
+        emit_kernel_section(&mut lines, kernel, profile.package_manager);
+    }
+
     // Apps already emitted, so the same flatpak is not installed/removed
     // twice across modules.
     let mut installed_flatpaks: HashSet<String> = HashSet::new();
@@ -250,81 +259,7 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         }
 
         // ── Repos ──
-        match profile.package_manager {
-            PackageManager::Dnf | PackageManager::Zypper => {
-                if !m.repos.import_keys.is_empty() {
-                    for key in &m.repos.import_keys {
-                        lines.push(format!("rpmkeys --import \"{}\"", key));
-                    }
-                }
-
-                for copr in &m.repos.copr {
-                    lines.push(format!("dnf5 -y copr enable {}", copr));
-                }
-
-                for repo in &m.repos.rpm_urls {
-                    let name = &repo.name;
-                    let baseurl = &repo.baseurl;
-                    lines.push(format!(
-                        r#"cat > /etc/yum.repos.d/{}.repo << 'REPO'
-[{}]
-name={}
-baseurl={}
-type=rpm-md
-skip_if_unavailable=True
-gpgcheck={}
-repo_gpgcheck=0
-enabled=1
-enabled_metadata=1
-REPO"#,
-                        name,
-                        name,
-                        name,
-                        baseurl,
-                        if repo.gpgkey.is_some() { "1" } else { "0" },
-                    ));
-                    if let Some(gpgkey) = &repo.gpgkey {
-                        lines.push(format!("rpmkeys --import \"{}\"", gpgkey));
-                    }
-                }
-
-                for repo_name in &m.repos.enable {
-                    lines.push(format!(
-                        r#"sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/{}.repo"#,
-                        repo_name
-                    ));
-                }
-            }
-            PackageManager::Apt => {
-                for line in &m.repos.apt_lines {
-                    lines.push(format!("echo \"{}\" >> /etc/apt/sources.list", line.replace("\"", "\\\"")));
-                }
-                if !m.repos.import_keys.is_empty() {
-                    lines.push("apt-get update".to_string());
-                    for key in &m.repos.import_keys {
-                        lines.push(format!("curl -fsSL \"{}\" | apt-key add -", key));
-                    }
-                }
-            }
-            PackageManager::Pacman => {
-                for repo in &m.repos.rpm_urls {
-                    let baseurl = &repo.baseurl;
-                    lines.push(format!(
-                        r#"cat >> /etc/pacman.conf << 'REPO'
-[{}]
-Server = {}
-REPO"#,
-                        repo.name, baseurl
-                    ));
-                }
-                if !m.repos.import_keys.is_empty() {
-                    lines.push("pacman -Sy --noconfirm".to_string());
-                    for key in &m.repos.import_keys {
-                        lines.push(format!("curl -fsSL \"{}\" | pacman-key --add - && pacman-key --lsign-key {}", key, key));
-                    }
-                }
-            }
-        }
+        emit_repos(&mut lines, &m.repos, profile.package_manager);
 
         // ── Remove packages ──
         if !m.remove.is_empty() {
@@ -512,4 +447,211 @@ REPO"#,
     lines.push(String::new());
 
     lines.join("\n")
+}
+
+/// Emit a module's or the kernel's repo setup (COPRs, rpm repos, key imports,
+/// enabling shipped repos). Shared so kernel repos and module repos behave
+/// identically.
+fn emit_repos(lines: &mut Vec<String>, repos: &RepoConfig, pm: PackageManager) {
+    match pm {
+        PackageManager::Dnf | PackageManager::Zypper => {
+            if !repos.import_keys.is_empty() {
+                for key in &repos.import_keys {
+                    lines.push(format!("rpmkeys --import \"{}\"", key));
+                }
+            }
+
+            for copr in &repos.copr {
+                lines.push(format!("dnf5 -y copr enable {}", copr));
+            }
+
+            for repo in &repos.rpm_urls {
+                let name = &repo.name;
+                let baseurl = &repo.baseurl;
+                lines.push(format!(
+                    r#"cat > /etc/yum.repos.d/{}.repo << 'REPO'
+[{}]
+name={}
+baseurl={}
+type=rpm-md
+skip_if_unavailable=True
+gpgcheck={}
+repo_gpgcheck=0
+enabled=1
+enabled_metadata=1
+REPO"#,
+                    name,
+                    name,
+                    name,
+                    baseurl,
+                    if repo.gpgkey.is_some() { "1" } else { "0" },
+                ));
+                if let Some(gpgkey) = &repo.gpgkey {
+                    lines.push(format!("rpmkeys --import \"{}\"", gpgkey));
+                }
+            }
+
+            for repo_name in &repos.enable {
+                lines.push(format!(
+                    r#"sed -i 's/enabled=0/enabled=1/' /etc/yum.repos.d/{}.repo"#,
+                    repo_name
+                ));
+            }
+        }
+        PackageManager::Apt => {
+            for line in &repos.apt_lines {
+                lines.push(format!(
+                    "echo \"{}\" >> /etc/apt/sources.list",
+                    line.replace("\"", "\\\"")
+                ));
+            }
+            if !repos.import_keys.is_empty() {
+                lines.push("apt-get update".to_string());
+                for key in &repos.import_keys {
+                    lines.push(format!("curl -fsSL \"{}\" | apt-key add -", key));
+                }
+            }
+        }
+        PackageManager::Pacman => {
+            for repo in &repos.rpm_urls {
+                let baseurl = &repo.baseurl;
+                lines.push(format!(
+                    r#"cat >> /etc/pacman.conf << 'REPO'
+[{}]
+Server = {}
+REPO"#,
+                    repo.name, baseurl
+                ));
+            }
+            if !repos.import_keys.is_empty() {
+                lines.push("pacman -Sy --noconfirm".to_string());
+                for key in &repos.import_keys {
+                    lines.push(format!(
+                        "curl -fsSL \"{}\" | pacman-key --add - && pacman-key --lsign-key {}",
+                        key, key
+                    ));
+                }
+            }
+        }
+    }
+}
+
+/// Validate kernel management: dnf-only, and a version only applies to a
+/// declared replacement package.
+fn validate_kernel(profile: &Profile, kernel: &KernelConfig) -> Result<()> {
+    if profile.package_manager != PackageManager::Dnf {
+        anyhow::bail!(
+            "profile '{}' declares kernel management but package_manager is '{}' — kernel management currently requires dnf",
+            profile.name,
+            profile.package_manager.as_str()
+        );
+    }
+    if kernel
+        .version
+        .as_ref()
+        .map_or(false, |v| !v.is_empty())
+        && kernel.packages.is_empty()
+    {
+        anyhow::bail!(
+            "profile '{}' sets kernel.version but kernel.packages is empty — a version only applies to declared kernel packages",
+            profile.name
+        );
+    }
+    if kernel.versionlock && kernel.packages.is_empty() {
+        anyhow::bail!(
+            "profile '{}' sets kernel.versionlock but kernel.packages is empty — declare the kernel package(s) to pin",
+            profile.name
+        );
+    }
+    Ok(())
+}
+
+/// Emit the kernel-management section: repo, stock removal, replacement
+/// install, version pinning, and initramfs regeneration. Emitted before any
+/// module section because a kernel swap is foundational.
+fn emit_kernel_section(lines: &mut Vec<String>, kernel: &KernelConfig, pm: PackageManager) {
+    let pkg = PkgManager::for_pm(pm);
+    lines.push(String::new());
+    lines.push("# === kernel ===".to_string());
+
+    // ── Repo(s) providing the kernel ──
+    emit_repos(lines, &kernel.repo, pm);
+
+    // ── Remove the stock kernel(s) ──
+    // Only remove packages that are actually installed, so the auto-default
+    // Fedora list stays valid on base images that name things differently,
+    // while a genuine dnf failure still aborts the build.
+    let remove = kernel.effective_remove();
+    if !remove.is_empty() {
+        let quoted = remove
+            .iter()
+            .map(|p| format!("\"{}\"", p))
+            .collect::<Vec<_>>()
+            .join(" ");
+        lines.push(String::new());
+        lines.push("# Remove stock kernel(s) that are present".to_string());
+        lines.push("__dcli_kernel_remove=()".to_string());
+        lines.push(format!(
+            "for __dcli_p in {}; do rpm -q \"$__dcli_p\" >/dev/null 2>&1 && __dcli_kernel_remove+=(\"$__dcli_p\"); done",
+            quoted
+        ));
+        lines.push(format!(
+            "if [ ${{#__dcli_kernel_remove[@]}} -gt 0 ]; then {} \"${{__dcli_kernel_remove[@]}}\"; fi",
+            pkg.remove
+        ));
+    }
+
+    // ── Install the replacement kernel(s) ──
+    if !kernel.packages.is_empty() {
+        let specs = kernel.install_specs();
+        lines.push(String::new());
+        lines.push(format!(
+            "{} \\\n    {}",
+            pkg.install,
+            specs.join(" \\\n    ")
+        ));
+    }
+
+    // ── Pin the installed version ──
+    if kernel.versionlock {
+        lines.push(String::new());
+        lines.push("# Fail fast when the dnf versionlock plugin is unavailable".to_string());
+        lines.push("if ! dnf versionlock list >/dev/null 2>&1; then".to_string());
+        lines.push(
+            "    echo 'error: kernel.versionlock requires the dnf versionlock plugin (install dnf-plugins-core)' >&2"
+                .to_string(),
+        );
+        lines.push("    exit 1".to_string());
+        lines.push("fi".to_string());
+        lines.push(format!(
+            "dnf versionlock add \\\n    {}",
+            kernel.packages.join(" \\\n    ")
+        ));
+    }
+
+    // ── Regenerate module deps + initramfs for the single kernel ──
+    if kernel.regen_initramfs && (!kernel.packages.is_empty() || !remove.is_empty()) {
+        lines.push(String::new());
+        lines.push("# Regenerate modules.dep and the initramfs in /usr/lib/modules".to_string());
+        lines.push("# (bootc requires exactly one kernel and an initramfs.img there)".to_string());
+        lines.push("__dcli_kmods=(/usr/lib/modules/*/)".to_string());
+        lines.push("if [ \"${#__dcli_kmods[@]}\" -ne 1 ]; then".to_string());
+        lines.push(
+            "    echo \"error: expected exactly one kernel in /usr/lib/modules, found ${#__dcli_kmods[@]}\" >&2"
+                .to_string(),
+        );
+        lines.push("    ls -1 /usr/lib/modules >&2 || true".to_string());
+        lines.push("    exit 1".to_string());
+        lines.push("fi".to_string());
+        lines.push("__dcli_kver=$(basename \"${__dcli_kmods[0]}\")".to_string());
+        lines.push("depmod -a \"$__dcli_kver\"".to_string());
+        lines.push(
+            "dracut --force --no-hostonly --kver \"$__dcli_kver\" \"/usr/lib/modules/$__dcli_kver/initramfs.img\""
+                .to_string(),
+        );
+        lines.push(
+            "rm -f /boot/initramfs-*.img /boot/vmlinuz-* /boot/symvers-*.gz 2>/dev/null || true"
+                .to_string(),
+        );
+    }
 }

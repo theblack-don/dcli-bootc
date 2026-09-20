@@ -267,6 +267,71 @@ gone — skipped with a warning when the base image has no `flatpak` binary.
 The base image must ship `flatpak` (bazzite and other desktop bases do);
 user-level flatpaks installed on the running system are not affected.
 
+## Kernel management
+
+`profile.yaml` can declare which kernel the image ships — for example a
+CachyOS or LTS kernel from a COPR instead of the base image's stock kernel:
+
+```yaml
+# profile.yaml
+kernel:
+  repo:
+    copr: [bieszczaders/kernel-cachyos]
+  packages:
+    - kernel-cachyos
+  version: "6.11.5"     # optional; pins the install spec
+  versionlock: true     # optional; dnf versionlock the installed kernel
+  regen_initramfs: true # default; required for the kernel to boot
+```
+
+Kernel management is **dnf-only** and `gen` fails fast for other package
+managers. The generated `build.sh` emits this section before any module so the
+kernel is settled first:
+
+1. enable the declared repo(s) and import keys;
+2. remove the stock kernel — by default the Fedora set (`kernel`,
+   `kernel-core`, `kernel-modules`, `kernel-modules-core`,
+   `kernel-modules-extra`), but only packages that are actually installed, so
+   the default is safe on base images that name things differently. Set
+   `remove: []` to keep the stock kernel, or list packages explicitly;
+3. install `packages` (with `-<version>` appended when `version` is set);
+4. `dnf versionlock` the installed kernel when `versionlock: true` (fails
+   fast if the plugin is missing);
+5. `depmod` + `dracut` the single remaining kernel to
+   `/usr/lib/modules/<kver>/initramfs.img`.
+
+bootc supports exactly one kernel per image — `bootc container lint`'s
+`kernel` check is fatal otherwise — so removing the stock kernel is part of
+the contract. The post-build verification blocks the switch prompt unless the
+image has exactly one kernel with both `vmlinuz` and `initramfs.img`, and (when
+`version` is set) the installed version matches the pin.
+
+### Multi-device kernels
+
+Each host can override the profile's `kernel:` block wholesale, exactly like
+`base_image`:
+
+```yaml
+# hosts/laptop.yaml
+kernel:
+  repo:
+    copr: [bieszczaders/kernel-cachyos]
+  packages: [kernel-cachyos-lts]
+  version: "6.11.5"
+  versionlock: true
+```
+
+The override flows through `--host`/hostname auto-detection like everything
+else: each device generates its own `build.sh`, gets its own content hash and
+`localhost/<image>:<host>` tag, and is verified independently.
+
+### Pinning caveats
+
+`version`/`versionlock` pin within the build, but a `bootc upgrade` rebases
+the image and does not run dnf — to freeze the kernel across rebases, pin the
+**base image** by digest (`base_image: …@sha256:…`) as well. Pinning only
+works while the kernel repo still carries that version.
+
 ## RakuOS (rum usr-overlay)
 
 RakuOS mounts a persistent overlayfs over `/usr`, and its `rum` package

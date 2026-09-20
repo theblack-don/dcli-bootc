@@ -28,6 +28,33 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
         "  Package manager: {}",
         profile.package_manager.as_str()
     );
+    if let Some(kernel) = &profile.kernel {
+        let mut detail: Vec<String> = Vec::new();
+        if !kernel.packages.is_empty() {
+            detail.push(format!("install {}", kernel.install_specs().join(", ")));
+        }
+        let remove = kernel.effective_remove();
+        if !remove.is_empty() {
+            detail.push(format!("remove stock {}", remove.join(", ")));
+        }
+        if kernel.versionlock {
+            detail.push("versionlock".to_string());
+        }
+        if kernel.regen_initramfs && !kernel.packages.is_empty() {
+            detail.push("regen initramfs".to_string());
+        }
+        if detail.is_empty() {
+            println!("  Kernel: (management configured, no packages)");
+        } else {
+            println!("  Kernel: {}", detail.join("; "));
+        }
+        if !kernel.repo.copr.is_empty() {
+            println!("    Kernel repo (copr): {}", kernel.repo.copr.join(", "));
+        }
+        for repo in &kernel.repo.rpm_urls {
+            println!("    Kernel repo: {} ({})", repo.name, repo.baseurl);
+        }
+    }
     println!(
         "  Modules ({}): {}",
         profile.enabled_modules.len(),

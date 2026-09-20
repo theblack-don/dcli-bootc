@@ -19,6 +19,7 @@ pub fn print_build_plan(
     image_ref: &str,
     base_image: &str,
     package_manager: config::PackageManager,
+    kernel: Option<&config::KernelConfig>,
 ) {
     println!(
         "{} Build plan: {} (base: {})",
@@ -27,6 +28,10 @@ pub fn print_build_plan(
         base_image
     );
     println!();
+
+    if let Some(kernel) = kernel {
+        print_kernel_plan(kernel);
+    }
 
     for rm in modules {
         print_module_plan(project_dir, rm);
@@ -49,7 +54,7 @@ pub fn print_build_plan(
     }
 
     println!();
-    print_comparison(project_dir, modules, image_ref, package_manager);
+    print_comparison(project_dir, modules, image_ref, package_manager, kernel);
 
     println!();
     println!(
@@ -57,6 +62,50 @@ pub fn print_build_plan(
         format!("Package versions are resolved by {} during the build.", package_manager.as_str()).dimmed()
     );
     println!();
+}
+
+/// The kernel section's contribution to the build, as indented lines under a
+/// header. Skipped when nothing is configured.
+fn print_kernel_plan(kernel: &config::KernelConfig) {
+    let mut lines: Vec<String> = Vec::new();
+
+    if !kernel.repo.import_keys.is_empty() {
+        lines.push(format!("import keys: {}", kernel.repo.import_keys.join(", ")));
+    }
+    if !kernel.repo.copr.is_empty() {
+        lines.push(format!("copr enable: {}", kernel.repo.copr.join(", ")));
+    }
+    for repo in &kernel.repo.rpm_urls {
+        lines.push(format!("repo '{}': {}", repo.name, repo.baseurl));
+    }
+    if !kernel.repo.enable.is_empty() {
+        lines.push(format!("enable repo: {}", kernel.repo.enable.join(", ")));
+    }
+    let remove = kernel.effective_remove();
+    if !remove.is_empty() {
+        lines.push(format!("remove stock ({}): {}", remove.len(), remove.join(", ")));
+    }
+    if !kernel.packages.is_empty() {
+        lines.push(format!(
+            "install ({}): {}",
+            kernel.packages.len(),
+            kernel.install_specs().join(", ")
+        ));
+    }
+    if kernel.versionlock {
+        lines.push("versionlock: yes".to_string());
+    }
+    if kernel.regen_initramfs && (!kernel.packages.is_empty() || !remove.is_empty()) {
+        lines.push("regenerate initramfs + depmod".to_string());
+    }
+
+    if lines.is_empty() {
+        return;
+    }
+    println!("  {}:", "kernel".bold());
+    for line in lines {
+        println!("    {}", line);
+    }
 }
 
 /// One module's contribution to the build, as indented lines under a header.
@@ -189,6 +238,7 @@ fn print_comparison(
     modules: &[ResolvedModule],
     image_ref: &str,
     package_manager: config::PackageManager,
+    kernel: Option<&config::KernelConfig>,
 ) {
     let Some(digest) = bootc::local_image_digest(image_ref) else {
         println!(
@@ -216,6 +266,10 @@ fn print_comparison(
                 wanted.push(name);
             }
         }
+    }
+    if let Some(kernel) = kernel {
+        wanted.extend(kernel.packages.iter().cloned());
+        removals.extend(kernel.effective_remove());
     }
 
     let new: Vec<&String> = wanted.iter().filter(|p| !installed.contains(*p)).collect();

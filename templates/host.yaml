@@ -34,3 +34,12 @@ exclude_modules: []
 # reconciles its live usr-overlay against its own module. Keep overlay
 # modules out of `modules:` above — they are rum-managed, not image-baked.
 # overlay_module: overlay-desktop
+
+# Optional kernel override for this device. When present it replaces the
+# profile's `kernel:` block entirely (like base_image above).
+# kernel:
+#   repo:
+#     copr: [bieszczaders/kernel-cachyos]
+#   packages: [kernel-cachyos-lts]
+#   version: "6.11.5"
+#   versionlock: true

@@ -21,3 +21,22 @@ enabled_modules:
 #   - fish/
 #   - helix/
 #   - bashrc: ~/.bashrc
+
+# Kernel management (dnf only). Swaps the stock kernel for an alternative
+# (e.g. CachyOS), optionally pins the version, and regenerates the initramfs.
+# bootc supports exactly one kernel per image, so the stock kernel is removed
+# automatically unless you set `remove: []`. Override per host in hosts/.
+# kernel:
+#   repo:
+#     copr: [bieszczaders/kernel-cachyos]
+#   remove:                 # optional; defaults to the Fedora stock kernel set
+#     - kernel
+#     - kernel-core
+#     - kernel-modules
+#     - kernel-modules-core
+#     - kernel-modules-extra
+#   packages:
+#     - kernel-cachyos
+#   version: "6.11.5"       # optional; pins the install spec
+#   versionlock: true       # optional; dnf versionlock the installed kernel
+#   regen_initramfs: true   # default; required for the kernel to boot

@@ -58,6 +58,11 @@ pub struct Profile {
     /// and should not be in `enabled_modules` (it is not baked into the image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_module: Option<String>,
+
+    /// Kernel management: which kernel the image ships and how it is pinned.
+    /// Overridable wholesale per host (see `HostConfig::kernel`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel: Option<KernelConfig>,
 }
 
 /// A single dotfiles entry.
@@ -152,6 +157,11 @@ pub struct HostConfig {
     /// module instead of the profile's shared `overlay_module`.
     #[serde(default)]
     pub overlay_module: Option<String>,
+
+    /// Optional kernel override for this host. When present it replaces the
+    /// profile's `kernel:` block entirely.
+    #[serde(default)]
+    pub kernel: Option<KernelConfig>,
 }
 
 /// A single module definition loaded from modules/*.yaml
@@ -300,6 +310,85 @@ pub struct Scripts {
     /// Runs after package installs, files, and services
     #[serde(default)]
     pub post: Option<String>,
+}
+
+/// Fedora stock kernel packages removed by default when a replacement kernel
+/// is installed and `kernel.remove` is omitted. Removal only touches packages
+/// that are actually present, so this is safe across base images.
+pub const DEFAULT_STOCK_KERNEL_PACKAGES: &[&str] = &[
+    "kernel",
+    "kernel-core",
+    "kernel-modules",
+    "kernel-modules-core",
+    "kernel-modules-extra",
+];
+
+/// Kernel management declared in `profile.yaml` (overridable per host).
+///
+/// dcli-bootc treats the kernel as a first-class concern: it adds the repo,
+/// swaps the stock kernel for the declared one, optionally pins the version,
+/// and regenerates module deps + initramfs. bootc supports exactly one kernel
+/// per image (the `kernel` lint in `bootc container lint` is fatal), so the
+/// stock kernel must be removed whenever a replacement is installed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KernelConfig {
+    /// Repos providing the kernel (same shape as module repos)
+    #[serde(default)]
+    pub repo: RepoConfig,
+
+    /// Stock kernel packages to remove. Omitted (`None`) → the Fedora stock
+    /// set is removed when `packages` is set; `remove: []` → remove nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remove: Option<Vec<String>>,
+
+    /// Replacement kernel package(s) to install
+    #[serde(default)]
+    pub packages: Vec<String>,
+
+    /// Optional version applied to every entry in `packages` (e.g. "6.11.5"),
+    /// producing an install spec such as `kernel-cachyos-6.11.5`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
+
+    /// Emit `dnf versionlock` for the kernel packages after install
+    #[serde(default)]
+    pub versionlock: bool,
+
+    /// Regenerate `modules.dep` and the initramfs after the swap (default
+    /// true). Required for the replacement kernel to boot on a bootc system.
+    #[serde(default = "default_true")]
+    pub regen_initramfs: bool,
+}
+
+impl KernelConfig {
+    /// Kernel packages to remove: the explicit list when set, otherwise the
+    /// Fedora stock set when a replacement kernel is being installed.
+    pub fn effective_remove(&self) -> Vec<String> {
+        match &self.remove {
+            Some(list) => list.clone(),
+            None if !self.packages.is_empty() => DEFAULT_STOCK_KERNEL_PACKAGES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    /// Install specs: package names with the pinned `version` suffix applied.
+    pub fn install_specs(&self) -> Vec<String> {
+        match &self.version {
+            Some(v) if !v.is_empty() => self
+                .packages
+                .iter()
+                .map(|p| format!("{}-{}", p, v))
+                .collect(),
+            _ => self.packages.clone(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 /// Find the profile file in a project directory (.yaml or .yml)
@@ -528,6 +617,66 @@ pub fn resolve_effective_profile(
     if let Some(om) = host_cfg.overlay_module {
         profile.overlay_module = Some(om);
     }
+    // Host kernel config replaces the profile's wholesale (like base_image).
+    if let Some(kernel) = host_cfg.kernel {
+        profile.kernel = Some(kernel);
+    }
 
     Ok((profile, Some(host_name)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kernel(packages: &[&str], remove: Option<&[&str]>, version: Option<&str>) -> KernelConfig {
+        KernelConfig {
+            repo: RepoConfig::default(),
+            remove: remove.map(|r| r.iter().map(|s| s.to_string()).collect()),
+            packages: packages.iter().map(|s| s.to_string()).collect(),
+            version: version.map(|s| s.to_string()),
+            versionlock: false,
+            regen_initramfs: true,
+        }
+    }
+
+    #[test]
+    fn auto_removes_stock_set_when_replacement_declared() {
+        let k = kernel(&["kernel-cachyos"], None, None);
+        assert_eq!(
+            k.effective_remove(),
+            DEFAULT_STOCK_KERNEL_PACKAGES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn omitted_remove_is_noop_without_a_replacement() {
+        assert!(kernel(&[], None, None).effective_remove().is_empty());
+    }
+
+    #[test]
+    fn explicit_empty_remove_disables_the_auto_default() {
+        assert!(kernel(&["kernel-cachyos"], Some(&[]), None)
+            .effective_remove()
+            .is_empty());
+    }
+
+    #[test]
+    fn version_suffixes_install_specs() {
+        let k = kernel(
+            &["kernel-cachyos", "kernel-cachyos-modules"],
+            Some(&[]),
+            Some("6.11.5"),
+        );
+        assert_eq!(
+            k.install_specs(),
+            vec![
+                "kernel-cachyos-6.11.5".to_string(),
+                "kernel-cachyos-modules-6.11.5".to_string()
+            ]
+        );
+    }
 }

@@ -48,7 +48,14 @@ pub fn run(
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
     let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
-    plan::print_build_plan(project_dir, &modules, &image_ref, base_image, profile.package_manager);
+    plan::print_build_plan(
+        project_dir,
+        &modules,
+        &image_ref,
+        base_image,
+        profile.package_manager,
+        profile.kernel.as_ref(),
+    );
 
     // ── Pull the latest base image ──
     let base_before = bootc::local_image_digest(base_image);

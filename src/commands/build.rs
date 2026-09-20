@@ -73,7 +73,14 @@ pub fn run(
     // before pulling the base image)
     if !skip_freshness_check {
         let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
-        plan::print_build_plan(project_dir, &modules, &image_ref, base_image, profile.package_manager);
+        plan::print_build_plan(
+            project_dir,
+            &modules,
+            &image_ref,
+            base_image,
+            profile.package_manager,
+            profile.kernel.as_ref(),
+        );
     }
 
     // ── Cache-busting content hash of the build inputs ──
@@ -289,6 +296,10 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
             }
         }
     }
+    if let Some(kernel) = &profile.kernel {
+        wanted.extend(kernel.packages.iter().cloned());
+        unwanted.extend(kernel.effective_remove());
+    }
     if wanted.is_empty()
         && unwanted.is_empty()
         && wanted_flatpaks.is_empty()
@@ -346,6 +357,86 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
     for pkg in &unwanted {
         if installed.contains(pkg) {
             problems.push(format!("should have been removed: {}", pkg));
+        }
+    }
+
+    // ── Kernel checks: exactly one kernel, vmlinuz + initramfs where bootc
+    // expects them, and the pinned version when one was declared ──
+    if let Some(kernel) = &profile.kernel {
+        let mut cmd = Command::new("sudo");
+        cmd.arg("podman")
+            .arg("run")
+            .arg("--rm")
+            .arg(image_ref)
+            .arg("sh")
+            .arg("-c")
+            .arg(
+                "n=$(ls -d /usr/lib/modules/*/ 2>/dev/null | wc -l); \
+                 echo \"kernel-count:$n\"; \
+                 kver=$(basename /usr/lib/modules/*/ 2>/dev/null | head -n1); \
+                 [ -f \"/usr/lib/modules/$kver/vmlinuz\" ] && echo vmlinuz:yes || echo vmlinuz:no; \
+                 [ -f \"/usr/lib/modules/$kver/initramfs.img\" ] && echo initramfs:yes || echo initramfs:no",
+            );
+
+        match cmd.output() {
+            Ok(output) if output.status.success() => {
+                let report = String::from_utf8_lossy(&output.stdout);
+                let field = |key: &str| -> Option<String> {
+                    let prefix = format!("{}:", key);
+                    report
+                        .lines()
+                        .find_map(|l| l.strip_prefix(prefix.as_str()))
+                        .map(|s| s.trim().to_string())
+                };
+
+                match field("kernel-count").as_deref() {
+                    Some("1") => {}
+                    Some(other) => problems.push(format!(
+                        "expected exactly one kernel in /usr/lib/modules, found {}",
+                        other
+                    )),
+                    None => {}
+                }
+                if field("vmlinuz").as_deref() != Some("yes") {
+                    problems
+                        .push("no vmlinuz found under /usr/lib/modules/<kver>".to_string());
+                }
+                if kernel.regen_initramfs && field("initramfs").as_deref() != Some("yes") {
+                    problems.push(
+                        "no initramfs.img under /usr/lib/modules/<kver> — the kernel may not boot"
+                            .to_string(),
+                    );
+                }
+            }
+            _ => println!(
+                "  {} Could not verify the kernel layout in the image — skipping check",
+                "!".yellow()
+            ),
+        }
+
+        if let Some(version) = kernel.version.as_ref().filter(|v| !v.is_empty()) {
+            for pkg in &kernel.packages {
+                let output = Command::new("sudo")
+                    .arg("podman")
+                    .arg("run")
+                    .arg("--rm")
+                    .arg(image_ref)
+                    .arg("rpm")
+                    .arg("-q")
+                    .arg("--qf")
+                    .arg("%{VERSION}-%{RELEASE}")
+                    .arg(pkg)
+                    .output();
+                if let Ok(output) = output {
+                    let got = String::from_utf8_lossy(&output.stdout).trim().to_string();
+                    if output.status.success() && !got.starts_with(version.as_str()) {
+                        problems.push(format!(
+                            "kernel package {} is {} but kernel.version pins {}",
+                            pkg, got, version
+                        ));
+                    }
+                }
+            }
         }
     }
 
