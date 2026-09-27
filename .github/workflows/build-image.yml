@@ -1,0 +1,33 @@
+name: Build bootc image
+
+on:
+  workflow_dispatch:
+
+  # Uncomment to build the image daily
+  # schedule:
+  #   - cron: "0 0 * * *"
+
+jobs:
+  build:
+    # Requires a self-hosted runner with podman/bootc + privileged mode
+    # or a VM/container with nested container support
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push bootc image
+        uses: ./.github/actions/dcli-bootc
+        with:
+          project-path: "./my-image"
+          command: "build"
+          force: "true"
+          registry: "ghcr.io/${{ github.repository_owner }}/my-image"
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}

@@ -625,6 +625,71 @@ offers to install the packaged binary to `~/.local/bin` — this works on
 atomic hosts where `/usr` is read-only. (`./build-dev.sh --system` installs
 to `/usr/local/bin` with sudo for regular Fedora.)
 
+## CI/CD
+
+Drop the included composite action and workflow templates into your own project to build and push bootc images in CI. They are meant to be **slotted into end-user repos**, not used to build `dcli-bootc` itself.
+
+### GitHub Actions
+
+Copy `.github/actions/dcli-bootc/action.yml` and `.github/workflows/build-image.yml` into your project. The workflow runs on `workflow_dispatch` — add a `schedule` trigger for daily builds:
+
+```yaml
+# .github/workflows/build-image.yml
+on:
+  workflow_dispatch:
+
+  # Build the image daily
+  schedule:
+    - cron: "0 0 * * *"
+```
+
+The composite action installs `dcli-bootc`, runs your chosen subcommand, and optionally pushes the result to a registry:
+
+```yaml
+- name: Build and push bootc image
+  uses: ./.github/actions/dcli-bootc
+  with:
+    project-path: "./my-bootc-image"
+    command: "build"
+    force: "true"
+    registry: "ghcr.io/${{ github.repository_owner }}/my-image"
+    registry-username: ${{ github.actor }}
+    registry-password: ${{ secrets.GITHUB_TOKEN }}
+```
+
+Leave `registry` empty to skip the push step.
+
+### GitLab CI
+
+Include the template in your `.gitlab-ci.yml`:
+
+```yaml
+include:
+  - project: "theblackdon/dcli-bootc/.gitlab/ci-templates"
+    ref: main
+    file: "/dcli-bootc.yml"
+```
+
+Then configure the variables:
+
+```yaml
+variables:
+  BOOTC_PROJECT_PATH: "./my-image"
+  BOOTC_REGISTRY: "registry.example.com/username/image"
+```
+
+The pipeline runs `gen` → `build` → (manual) `push`. Add a schedule in GitLab's UI to run it daily.
+
+### Requirements
+
+CI runners need:
+- **podman** with root privileges and the `containers-storage` transport
+- **bootc** (only needed if you want to switch/rollback from CI)
+- **skopeo** for pushing to a registry
+- **dnf** for installing packages during the build
+
+Self-hosted runners or VMs with nested container support work. Shared runners without privileged containers will not.
+
 ## License
 
 0BSD
