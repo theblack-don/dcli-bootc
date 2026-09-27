@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashSet;
 use std::path::Path;
 
-use crate::config::{KernelConfig, PackageManager, Profile, RepoConfig};
+use crate::config::{KernelConfig, OverlayBackend, PackageManager, Profile, RepoConfig};
 use crate::module::{collect_flatpak_remotes, load_enabled_modules, ResolvedModule};
 
 /// Package-manager-specific shell commands
@@ -54,7 +54,7 @@ pub fn generate(project_dir: &Path, profile: &Profile, host: Option<&str>) -> Re
     if let Some(om) = &profile.overlay_module {
         if profile.enabled_modules.contains(om) {
             eprintln!(
-                "Warning: overlay_module '{}' is in enabled_modules — RakuOS overlay packages are installed with rum into the live overlay, not baked into the image. Remove it from enabled_modules to avoid baking them too.",
+                "Warning: overlay_module '{}' is in enabled_modules — its packages are installed into the live usr-overlay, not baked into the image. Remove it from enabled_modules to avoid baking them too.",
                 om
             );
         }
@@ -440,6 +440,22 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         }
     }
 
+    // ── Baked base-package list (for overlay backends with a merged rpmdb) ──
+    // Record the package set baked into this image so the host-side overlay
+    // backend can tell base-provided packages from overlay-installed ones and
+    // avoid overlayfs whiteouts. Skipped for the RakuOS rum backend, which has
+    // a separate base rpmdb.
+    if profile.overlay_module.is_some() && profile.overlay_backend != OverlayBackend::Rum {
+        lines.push(String::new());
+        lines.push("# === overlay base package list ===".to_string());
+        lines.push("# Base-image package set, for usr-overlay whiteout safety.".to_string());
+        lines.push(format!("mkdir -p {}", overlay_base_list_dir()));
+        lines.push(format!(
+            "rpm -qa --qf '%{{NAME}}\\n' | sort -u > {}",
+            crate::overlay::BAKED_BASE_LIST
+        ));
+    }
+
     // ── Final cleanup ──
     lines.push(String::new());
     lines.push("# === cleanup ===".to_string());
@@ -447,6 +463,14 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
     lines.push(String::new());
 
     lines.join("\n")
+}
+
+/// Directory of the baked base-package list (`/usr/share/dcli-bootc`).
+fn overlay_base_list_dir() -> &'static str {
+    match crate::overlay::BAKED_BASE_LIST.rsplit_once('/') {
+        Some((dir, _)) => dir,
+        None => "/usr/share/dcli-bootc",
+    }
 }
 
 /// Emit a module's or the kernel's repo setup (COPRs, rpm repos, key imports,
@@ -655,3 +679,54 @@ fn emit_kernel_section(lines: &mut Vec<String>, kernel: &KernelConfig, pm: Packa
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn profile(overlay_module: Option<&str>, backend: OverlayBackend) -> Profile {
+        Profile {
+            name: "test".to_string(),
+            base_image: "ghcr.io/ublue-os/bazzite:stable".to_string(),
+            nvidia_base_image: None,
+            default_tag: "latest".to_string(),
+            enabled_modules: vec![],
+            package_manager: PackageManager::Dnf,
+            dotfiles: vec![],
+            overlay_module: overlay_module.map(str::to_string),
+            overlay_backend: backend,
+            kernel: None,
+        }
+    }
+
+    #[test]
+    fn bakes_base_package_list_for_kinpkg_overlay() {
+        let out = generate_build_sh(
+            &profile(Some("overlay-packages"), OverlayBackend::Kinpkg),
+            &[],
+            None,
+        );
+        assert!(out.contains("mkdir -p /usr/share/dcli-bootc"), "{out}");
+        assert!(
+            out.contains("> /usr/share/dcli-bootc/base-packages.list"),
+            "{out}"
+        );
+        assert!(out.contains("rpm -qa --qf '%{NAME}\\n'"), "{out}");
+    }
+
+    #[test]
+    fn bakes_base_package_list_for_auto_overlay() {
+        let out = generate_build_sh(&profile(Some("overlay"), OverlayBackend::Auto), &[], None);
+        assert!(out.contains("base-packages.list"), "{out}");
+    }
+
+    #[test]
+    fn skips_base_package_list_for_rum_or_no_overlay() {
+        let rum = generate_build_sh(&profile(Some("overlay"), OverlayBackend::Rum), &[], None);
+        assert!(!rum.contains("base-packages.list"), "{rum}");
+
+        let none = generate_build_sh(&profile(None, OverlayBackend::Auto), &[], None);
+        assert!(!none.contains("base-packages.list"), "{none}");
+    }
+}
+

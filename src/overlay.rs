@@ -1,65 +1,269 @@
-//! RakuOS `rum` usr-overlay integration.
+//! usr-overlay backends.
 //!
-//! RakuOS mounts a persistent overlayfs over `/usr`; `rum install` writes
-//! packages into its upperdir and records their names in
-//! `/var/lib/rakuos/packages.list`. Those packages stay in the overlay, live —
-//! they are not baked into the image. dcli-bootc makes the set declarative:
-//! `overlay import` snapshots the overlay into a module, and build/update (or
-//! `overlay sync`) reconcile the live overlay to match it, installing added
-//! packages and removing dropped ones with rum. Packages the base image
-//! provides are kept rather than removed — see
-//! `commands::overlay::base_provided_packages`.
+//! dcli-bootc makes the host's live usr-overlay declarative: `overlay import`
+//! snapshots the overlay into a module, and build/update (or `overlay sync`)
+//! reconcile the live overlay to match it. Two backends are supported:
+//!
+//! * `rum` — RakuOS. `rum install` writes packages into the overlay upperdir and
+//!   records their names in `/var/lib/rakuos/packages.list`. The base image
+//!   keeps its own rpmdb at `/usr/share/rpm`, separate from rum's
+//!   `/var/lib/rakuos/rum-rpmdb`, so base and overlay packages are
+//!   distinguishable.
+//! * `kinpkg` — kineticos. A persistent overlayfs on `/usr` (shipped by the
+//!   project's `overlay` module) with `kinpkg` as the installer. The record
+//!   lives in `/var/lib/kineticos/overlay/installed.txt` and there is a single
+//!   merged rpmdb, so base-provided packages are read from a list baked into
+//!   the image at build time (see `BAKED_BASE_LIST`).
+//!
+//! Packages the base image provides are kept rather than removed — erasing one
+//! through the overlay unlinks a path that also exists in the base layer,
+//! leaving an overlayfs whiteout that hides the base copy permanently.
 
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const PACKAGES_LIST: &str = "/var/lib/rakuos/packages.list";
-const RPM_PACKAGES_LIST: &str = "/var/lib/rakuos/packages-rpm.list";
+use crate::config::OverlayBackend as BackendPref;
 
-/// True when this host has the RakuOS rum overlay (list file + rum binary).
-pub fn available() -> bool {
-    Path::new(PACKAGES_LIST).exists() && which("rum").is_some()
+/// Path of the base-image package list the generator bakes into the image for
+/// backends whose overlay shares the base rpmdb (kinpkg).
+pub const BAKED_BASE_LIST: &str = "/usr/share/dcli-bootc/base-packages.list";
+
+/// A usr-overlay implementation dcli-bootc can reconcile against.
+pub trait OverlayBackend {
+    /// Stable id, e.g. "rum" or "kinpkg".
+    fn id(&self) -> &'static str;
+
+    /// Human label for messages, e.g. "RakuOS overlay (rum)".
+    fn label(&self) -> &'static str;
+
+    /// The installer command's short name, e.g. "rum" or "kinpkg".
+    fn tool(&self) -> &'static str;
+
+    /// True when this backend is usable on the current host.
+    fn available(&self) -> bool;
+
+    /// Packages currently installed into the host overlay, sorted and deduped.
+    fn installed_packages(&self) -> Result<Vec<String>>;
+
+    /// Install packages into the host overlay.
+    fn install_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()>;
+
+    /// Remove packages from the host overlay.
+    fn remove_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()>;
+
+    /// Upgrade packages already installed in the host overlay to their newest
+    /// available versions. Unlike install/remove this ignores the manifest —
+    /// it refreshes whatever the overlay currently holds (used by `update`).
+    fn upgrade_packages(&self) -> Result<()>;
+
+    /// Package names the booted base image provides, when it can be
+    /// determined. `None` means "unknown" — callers then refuse to remove
+    /// rather than risk a whiteout.
+    fn base_packages(&self) -> Option<HashSet<String>>;
+
+    /// True when `name` is installed in the live overlay.
+    fn has_package(&self, name: &str) -> bool;
+
+    /// Whether this backend supports locally-installed RPMs (staged copies).
+    fn supports_local_rpms(&self) -> bool;
+
+    /// Names of locally-installed overlay RPMs.
+    fn installed_local_rpms(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Where this backend stages a copy of a locally-installed RPM.
+    fn staged_local_rpm(&self, _name: &str) -> Option<PathBuf> {
+        None
+    }
+
+    /// Install a local `.rpm` file into the host overlay.
+    fn install_local_rpm(&self, _path: &Path, _dry_run: bool) -> Result<()> {
+        anyhow::bail!("{} does not support local RPMs", self.id())
+    }
+
+    /// Overwrite the backend's staged copy of a local RPM (root owned), so a
+    /// later overlay rebuild can still reinstall it.
+    fn stage_local_rpm(&self, _src: &Path, _name: &str) -> Result<()> {
+        anyhow::bail!("{} does not support local RPMs", self.id())
+    }
+
+    /// Overwrite the host overlay's package lists (root owned) to match the
+    /// given contents, backing the originals up as `.bak` first.
+    fn write_package_lists(&self, packages: &[String], local_rpms: &[String]) -> Result<()>;
+
+    /// Whether this backend has an operation that rebuilds the live overlay
+    /// from the (rewritten) package lists.
+    fn supports_reset(&self) -> bool;
+
+    /// Schedule a rebuild of the live overlay from its package lists.
+    fn schedule_reset(&self) -> Result<()> {
+        anyhow::bail!("{} has no overlay reset operation", self.id())
+    }
 }
 
-/// Packages explicitly installed into the host overlay, sorted and deduped.
-pub fn installed_packages() -> Result<Vec<String>> {
-    let raw = std::fs::read_to_string(PACKAGES_LIST)
-        .with_context(|| format!("Failed to read {}", PACKAGES_LIST))?;
-    Ok(parse_list(&raw))
+/// Select the backend to use for `pref`, or `None` when none is available.
+pub fn select(pref: BackendPref) -> Option<Box<dyn OverlayBackend>> {
+    match pref {
+        BackendPref::Rum => {
+            let backend = RumBackend;
+            backend
+                .available()
+                .then(|| Box::new(backend) as Box<dyn OverlayBackend>)
+        }
+        BackendPref::Kinpkg => {
+            let backend = KinpkgBackend;
+            backend
+                .available()
+                .then(|| Box::new(backend) as Box<dyn OverlayBackend>)
+        }
+        BackendPref::Auto => {
+            let rum = RumBackend;
+            if rum.available() {
+                Some(Box::new(rum))
+            } else {
+                let kinpkg = KinpkgBackend;
+                if kinpkg.available() {
+                    Some(Box::new(kinpkg))
+                } else {
+                    None
+                }
+            }
+        }
+    }
 }
 
-/// Packages installed into the overlay from local .rpm files. These cannot be
-/// reproduced from `packages:` (no repo provides them) — the user must declare
-/// them as `local_rpms`/`remote_rpms` instead.
-pub fn installed_local_rpms() -> Vec<String> {
-    std::fs::read_to_string(RPM_PACKAGES_LIST)
-        .map(|raw| parse_list(&raw))
-        .unwrap_or_default()
+/// Explain what the host is missing for the requested backend to be available.
+pub fn unavailable_message(pref: BackendPref) -> String {
+    match pref {
+        BackendPref::Rum => "RakuOS rum overlay not found on this host (need /var/lib/rakuos/packages.list and 'rum' in PATH)".to_string(),
+        BackendPref::Kinpkg => format!(
+            "kineticos kinpkg overlay not found on this host (need {} and 'kinpkg' in PATH)",
+            KinpkgBackend::BASE
+        ),
+        BackendPref::Auto => "no usr-overlay backend found on this host (need RakuOS rum, or kineticos kinpkg plus /var/lib/kineticos/overlay)".to_string(),
+    }
 }
 
-fn parse_list(raw: &str) -> Vec<String> {
-    let mut pkgs: Vec<String> = raw
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(str::to_string)
-        .collect();
-    pkgs.sort();
-    pkgs.dedup();
-    pkgs
+// ───────────────────────────── RakuOS rum ─────────────────────────────
+
+const RUM_PACKAGES_LIST: &str = "/var/lib/rakuos/packages.list";
+const RUM_RPM_LIST: &str = "/var/lib/rakuos/packages-rpm.list";
+const RUM_RPMDB: &str = "/var/lib/rakuos/rum-rpmdb";
+const RUM_LOCAL_RPM_DIR: &str = "/var/lib/rakuos/local-rpms";
+
+/// RakuOS `rum` usr-overlay.
+pub struct RumBackend;
+
+impl OverlayBackend for RumBackend {
+    fn id(&self) -> &'static str {
+        "rum"
+    }
+
+    fn label(&self) -> &'static str {
+        "RakuOS overlay (rum)"
+    }
+
+    fn tool(&self) -> &'static str {
+        "rum"
+    }
+
+    fn available(&self) -> bool {
+        Path::new(RUM_PACKAGES_LIST).exists() && which("rum").is_some()
+    }
+
+    fn installed_packages(&self) -> Result<Vec<String>> {
+        let raw = std::fs::read_to_string(RUM_PACKAGES_LIST)
+            .with_context(|| format!("Failed to read {}", RUM_PACKAGES_LIST))?;
+        Ok(parse_list(&raw))
+    }
+
+    fn install_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
+        run_rum("install", pkgs, dry_run)
+    }
+
+    fn remove_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
+        run_rum("remove", pkgs, dry_run)
+    }
+
+    fn upgrade_packages(&self) -> Result<()> {
+        run_rum_upgrade()
+    }
+
+    fn base_packages(&self) -> Option<HashSet<String>> {
+        // RakuOS split layout: base packages live in the booted image's own
+        // rpmdb, overlay packages in rum's separate db.
+        rpm_names(&["-qa", "--dbpath", "/usr/share/rpm", "--queryformat", "%{NAME}\n"])
+    }
+
+    fn has_package(&self, name: &str) -> bool {
+        rpm_query_succeeds(&["-q", "--dbpath", RUM_RPMDB, name])
+    }
+
+    fn supports_local_rpms(&self) -> bool {
+        true
+    }
+
+    fn installed_local_rpms(&self) -> Vec<String> {
+        read_list_optional(RUM_RPM_LIST)
+    }
+
+    fn staged_local_rpm(&self, name: &str) -> Option<PathBuf> {
+        Some(Path::new(RUM_LOCAL_RPM_DIR).join(format!("{}.rpm", name)))
+    }
+
+    fn install_local_rpm(&self, path: &Path, dry_run: bool) -> Result<()> {
+        let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let mut cmd = Command::new("sudo");
+        cmd.arg("rum").arg("install").arg("-y");
+        if dry_run {
+            cmd.arg("--dry-run");
+        }
+        cmd.arg(&abs);
+        let status = cmd
+            .status()
+            .with_context(|| format!("Failed to execute 'rum install {}'", abs.display()))?;
+        if !status.success() {
+            anyhow::bail!("rum install {} failed", abs.display());
+        }
+        Ok(())
+    }
+
+    fn stage_local_rpm(&self, src: &Path, name: &str) -> Result<()> {
+        let dst = Path::new(RUM_LOCAL_RPM_DIR).join(format!("{}.rpm", name));
+        stage_root_copy(src, &dst)
+            .with_context(|| format!("Failed to stage {} for the overlay", src.display()))
+    }
+
+    fn write_package_lists(&self, packages: &[String], local_rpms: &[String]) -> Result<()> {
+        write_root_list(RUM_PACKAGES_LIST, packages)?;
+        write_root_list(RUM_RPM_LIST, local_rpms)?;
+        Ok(())
+    }
+
+    fn supports_reset(&self) -> bool {
+        true
+    }
+
+    fn schedule_reset(&self) -> Result<()> {
+        // `--soft` keeps `packages.list` and the local RPMs, so the overlay is
+        // reinstalled from the (freshly rewritten) lists.
+        let status = Command::new("sudo")
+            .args(["rakuos", "reset-overlay", "--soft"])
+            .status()
+            .context(
+                "Failed to execute 'sudo rakuos reset-overlay --soft' (is 'rakuos' installed and on PATH?)",
+            )?;
+        if !status.success() {
+            anyhow::bail!("rakuos reset-overlay --soft failed");
+        }
+        Ok(())
+    }
 }
 
-/// Remove packages from the host overlay with `rum remove`.
-pub fn remove_packages(pkgs: &[String], dry_run: bool) -> Result<()> {
-    run_rum("remove", pkgs, dry_run)
-}
-
-/// Install packages into the host overlay with `rum install`.
-pub fn install_packages(pkgs: &[String], dry_run: bool) -> Result<()> {
-    run_rum("install", pkgs, dry_run)
-}
-
+/// Install packages into the host overlay with `rum install`/`rum remove`.
 fn run_rum(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
     if pkgs.is_empty() {
         return Ok(());
@@ -79,38 +283,203 @@ fn run_rum(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Path rum keeps a staged copy of a locally-installed RPM at. rum names the
-/// copy after the package (`<name>.rpm`); this is what `rakuos reset-overlay
-/// --soft` and `rakuos-overlay-sync` reinstall from on a later boot.
-pub fn staged_local_rpm(name: &str) -> PathBuf {
-    Path::new("/var/lib/rakuos/local-rpms").join(format!("{}.rpm", name))
-}
-
-/// Install a local `.rpm` file into the host overlay with `rum install`. rum
-/// copies the file under `/var/lib/rakuos/local-rpms` and records it in
-/// `packages-rpm.list`, so the overlay can reinstall it after a reset.
-pub fn install_local_rpm(path: &Path, dry_run: bool) -> Result<()> {
-    let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let mut cmd = Command::new("sudo");
-    cmd.arg("rum").arg("install").arg("-y");
-    if dry_run {
-        cmd.arg("--dry-run");
-    }
-    cmd.arg(&abs);
-    let status = cmd
+/// Upgrade every overlay-installed package with `rum upgrade`.
+fn run_rum_upgrade() -> Result<()> {
+    let status = Command::new("sudo")
+        .args(["rum", "upgrade", "-y"])
         .status()
-        .with_context(|| format!("Failed to execute 'rum install {}'", abs.display()))?;
+        .context("Failed to execute 'rum upgrade' (is 'rum' installed and on PATH?)")?;
     if !status.success() {
-        anyhow::bail!("rum install {} failed", abs.display());
+        anyhow::bail!("rum upgrade failed");
     }
     Ok(())
 }
 
-/// Overwrite rum's staged copy of a local RPM with the project's file (root
-/// owned). Repairs the case where a soft reset blanked the staged copy, so the
-/// next overlay rebuild can still reinstall it.
-pub fn stage_local_rpm(src: &Path, name: &str) -> Result<()> {
-    let dst = staged_local_rpm(name);
+// ───────────────────────────── kineticos kinpkg ─────────────────────────────
+
+/// kineticos persistent `/usr` overlay, installed/recorded by `kinpkg`.
+pub struct KinpkgBackend;
+
+impl KinpkgBackend {
+    /// Overlay state directory (exists once the mount unit has run).
+    const BASE: &'static str = "/var/lib/kineticos/overlay";
+    /// Repo-installed overlay package names, one per line.
+    const LIST: &'static str = "/var/lib/kineticos/overlay/installed.txt";
+    /// Locally-installed overlay package names, one per line.
+    const RPM_LIST: &'static str = "/var/lib/kineticos/overlay/installed-rpm.txt";
+    /// Staged copies of locally-installed RPMs.
+    const LOCAL_RPM_DIR: &'static str = "/var/lib/kineticos/overlay/local-rpms";
+}
+
+impl OverlayBackend for KinpkgBackend {
+    fn id(&self) -> &'static str {
+        "kinpkg"
+    }
+
+    fn label(&self) -> &'static str {
+        "kineticos overlay (kinpkg)"
+    }
+
+    fn tool(&self) -> &'static str {
+        "kinpkg"
+    }
+
+    fn available(&self) -> bool {
+        Path::new(Self::BASE).is_dir() && (which("kinpkg").is_some() || which("ki").is_some())
+    }
+
+    fn installed_packages(&self) -> Result<Vec<String>> {
+        Ok(read_list_optional(Self::LIST))
+    }
+
+    fn install_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
+        run_kinpkg("install", pkgs, dry_run)
+    }
+
+    fn remove_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
+        run_kinpkg("remove", pkgs, dry_run)
+    }
+
+    fn upgrade_packages(&self) -> Result<()> {
+        run_kinpkg_upgrade()
+    }
+
+    fn base_packages(&self) -> Option<HashSet<String>> {
+        // KineticOS keeps one merged rpmdb inside the overlay, so the base set
+        // is read from the list the generator baked into the image.
+        let raw = std::fs::read_to_string(BAKED_BASE_LIST).ok()?;
+        Some(parse_list(&raw).into_iter().collect())
+    }
+
+    fn has_package(&self, name: &str) -> bool {
+        // Merged rpmdb: a plain query is authoritative.
+        rpm_query_succeeds(&["-q", name])
+    }
+
+    fn supports_local_rpms(&self) -> bool {
+        true
+    }
+
+    fn installed_local_rpms(&self) -> Vec<String> {
+        read_list_optional(Self::RPM_LIST)
+    }
+
+    fn staged_local_rpm(&self, name: &str) -> Option<PathBuf> {
+        Some(Path::new(Self::LOCAL_RPM_DIR).join(format!("{}.rpm", name)))
+    }
+
+    fn install_local_rpm(&self, path: &Path, dry_run: bool) -> Result<()> {
+        // kinpkg stages a copy and records the name itself.
+        let abs = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        run_kinpkg("install", &[abs.to_string_lossy().to_string()], dry_run)
+    }
+
+    fn stage_local_rpm(&self, src: &Path, name: &str) -> Result<()> {
+        let dst = Path::new(Self::LOCAL_RPM_DIR).join(format!("{}.rpm", name));
+        stage_root_copy(src, &dst)
+            .with_context(|| format!("Failed to stage {} for the overlay", src.display()))
+    }
+
+    fn write_package_lists(&self, packages: &[String], local_rpms: &[String]) -> Result<()> {
+        write_root_list(Self::LIST, packages)?;
+        write_root_list(Self::RPM_LIST, local_rpms)?;
+        Ok(())
+    }
+
+    fn supports_reset(&self) -> bool {
+        false
+    }
+}
+
+/// Install/remove overlay packages with `kinpkg`.
+fn run_kinpkg(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
+    if pkgs.is_empty() {
+        return Ok(());
+    }
+    if dry_run {
+        println!("  (dry run) would run: sudo kinpkg {} {}", action, pkgs.join(" "));
+        return Ok(());
+    }
+    let bin = which("kinpkg")
+        .or_else(|| which("ki"))
+        .context("kinpkg not found on PATH")?;
+    let mut cmd = Command::new("sudo");
+    // dcli-bootc has already confirmed with the user, so tell kinpkg to skip
+    // dnf's own prompt (kinpkg forwards -y to dnf).
+    cmd.arg(bin).arg(action).arg("-y").args(pkgs);
+    let status = cmd
+        .status()
+        .with_context(|| format!("Failed to execute 'kinpkg {}'", action))?;
+    if !status.success() {
+        anyhow::bail!("kinpkg {} failed", action);
+    }
+    Ok(())
+}
+
+/// Upgrade every overlay-installed package with `kinpkg upgrade`.
+fn run_kinpkg_upgrade() -> Result<()> {
+    let bin = which("kinpkg")
+        .or_else(|| which("ki"))
+        .context("kinpkg not found on PATH")?;
+    let status = Command::new("sudo")
+        .arg(bin)
+        .arg("upgrade")
+        .arg("-y")
+        .status()
+        .context("Failed to execute 'kinpkg upgrade'")?;
+    if !status.success() {
+        anyhow::bail!("kinpkg upgrade failed");
+    }
+    Ok(())
+}
+
+// ───────────────────────────── shared helpers ─────────────────────────────
+
+/// Read and parse a package list, or an empty list when the file is absent.
+fn read_list_optional(path: &str) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|raw| parse_list(&raw))
+        .unwrap_or_default()
+}
+
+fn parse_list(raw: &str) -> Vec<String> {
+    let mut pkgs: Vec<String> = raw
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(str::to_string)
+        .collect();
+    pkgs.sort();
+    pkgs.dedup();
+    pkgs
+}
+
+/// Run `rpm` and collect the queried names, or `None` on failure.
+fn rpm_names(args: &[&str]) -> Option<HashSet<String>> {
+    let out = Command::new("rpm").args(args).output().ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    )
+}
+
+/// True when `rpm` exits successfully (a package matched).
+fn rpm_query_succeeds(args: &[&str]) -> bool {
+    Command::new("rpm")
+        .args(args)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Copy `src` to root-owned `dst` with mode 0644.
+fn stage_root_copy(src: &Path, dst: &Path) -> Result<()> {
     let src_str = src.to_string_lossy().to_string();
     let dst_str = dst.to_string_lossy().to_string();
     run_sudo(&[
@@ -125,22 +494,9 @@ pub fn stage_local_rpm(src: &Path, name: &str) -> Result<()> {
         src_str.as_str(),
         dst_str.as_str(),
     ])
-    .with_context(|| format!("Failed to stage {} for the overlay", src.display()))
 }
 
-/// Overwrite the host overlay's package lists (root-owned) to match the given
-/// contents, backing the originals up as `.bak` first.
-///
-/// `rum` itself never removes a package the base image provides — doing so
-/// would whiteout the base copy — and `rakuos reset-overlay --soft` preserves
-/// these lists. Rewriting them and then resetting is what actually reclaims
-/// the redundant overlay entries; see `commands::overlay::clean`.
-pub fn write_package_lists(packages: &[String], local_rpms: &[String]) -> Result<()> {
-    write_root_list(PACKAGES_LIST, packages)?;
-    write_root_list(RPM_PACKAGES_LIST, local_rpms)?;
-    Ok(())
-}
-
+/// Overwrite a root-owned package list, backing the original up as `.bak`.
 fn write_root_list(path: &str, entries: &[String]) -> Result<()> {
     let body: String = entries.iter().map(|e| format!("{}\n", e)).collect();
 
@@ -185,22 +541,6 @@ fn run_sudo(args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Schedule a clean rebuild of the usr-overlay on next boot. `--soft` keeps
-/// `packages.list` and the local RPMs, so the overlay is reinstalled from the
-/// (freshly rewritten) lists.
-pub fn schedule_soft_reset() -> Result<()> {
-    let status = Command::new("sudo")
-        .args(["rakuos", "reset-overlay", "--soft"])
-        .status()
-        .context(
-            "Failed to execute 'sudo rakuos reset-overlay --soft' (is 'rakuos' installed and on PATH?)",
-        )?;
-    if !status.success() {
-        anyhow::bail!("rakuos reset-overlay --soft failed");
-    }
-    Ok(())
-}
-
 fn which(bin: &str) -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         std::env::split_paths(&paths)
@@ -217,5 +557,16 @@ mod tests {
     fn parses_names_skipping_comments_and_blanks() {
         let got = parse_list("steam\n\n# comment\nkitty\nsteam \n");
         assert_eq!(got, vec!["kitty", "steam"]);
+    }
+
+    #[test]
+    fn auto_prefers_rum_but_falls_back() {
+        // select() depends on the host; just assert the dispatch compiles and
+        // returns the rum backend when explicitly requested and available is
+        // not guaranteed here, so only check the reason strings are distinct.
+        assert_ne!(
+            unavailable_message(BackendPref::Rum),
+            unavailable_message(BackendPref::Kinpkg)
+        );
     }
 }

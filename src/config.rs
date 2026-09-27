@@ -24,6 +24,19 @@ impl PackageManager {
     }
 }
 
+/// Which usr-overlay implementation dcli-bootc reconciles against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum OverlayBackend {
+    /// Prefer RakuOS `rum` when present, otherwise kinpkg.
+    #[default]
+    Auto,
+    /// RakuOS `rum` usr-overlay.
+    Rum,
+    /// kineticos persistent `/usr` overlay managed by `kinpkg`.
+    Kinpkg,
+}
+
 /// Top-level profile for a bootc image project
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Profile {
@@ -58,6 +71,12 @@ pub struct Profile {
     /// and should not be in `enabled_modules` (it is not baked into the image).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overlay_module: Option<String>,
+
+    /// Which usr-overlay implementation to reconcile against (`auto`, `rum`,
+    /// or `kinpkg`). `auto` picks RakuOS `rum` when it is present on the host,
+    /// otherwise the kineticos `kinpkg` overlay.
+    #[serde(default)]
+    pub overlay_backend: OverlayBackend,
 
     /// Kernel management: which kernel the image ships and how it is pinned.
     /// Overridable wholesale per host (see `HostConfig::kernel`).
@@ -157,6 +176,11 @@ pub struct HostConfig {
     /// module instead of the profile's shared `overlay_module`.
     #[serde(default)]
     pub overlay_module: Option<String>,
+
+    /// Optional usr-overlay backend override for this host (`auto`, `rum`,
+    /// `kinpkg`). When present it replaces the profile's `overlay_backend`.
+    #[serde(default)]
+    pub overlay_backend: Option<OverlayBackend>,
 
     /// Optional kernel override for this host. When present it replaces the
     /// profile's `kernel:` block entirely.
@@ -616,6 +640,9 @@ pub fn resolve_effective_profile(
     }
     if let Some(om) = host_cfg.overlay_module {
         profile.overlay_module = Some(om);
+    }
+    if let Some(ob) = host_cfg.overlay_backend {
+        profile.overlay_backend = ob;
     }
     // Host kernel config replaces the profile's wholesale (like base_image).
     if let Some(kernel) = host_cfg.kernel {

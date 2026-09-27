@@ -130,7 +130,7 @@ enum Commands {
     /// Apply profile dotfiles into ~ as symlinks (also runs on build/update)
     Dotfiles,
 
-    /// Manage the RakuOS usr-overlay (rum) that backs a module
+    /// Manage the usr-overlay that backs a module (RakuOS rum or kineticos kinpkg)
     Overlay {
         #[command(subcommand)]
         action: OverlayAction,
@@ -167,6 +167,13 @@ enum OverlayAction {
         dry_run: bool,
     },
 
+    /// Upgrade the packages already installed in the host overlay
+    Upgrade {
+        /// Skip the confirmation prompt
+        #[arg(short, long)]
+        force: bool,
+    },
+
     /// Show drift between the host overlay and the project's modules
     Status,
 
@@ -183,7 +190,7 @@ enum OverlayAction {
     },
 
     /// Rewrite the live overlay's package lists to match the module, then
-    /// offer to run 'rakuos reset-overlay --soft'
+    /// offer to reset the overlay (RakuOS rum)
     Clean {
         /// Show what would change without writing
         #[arg(long)]
@@ -248,6 +255,7 @@ fn main() -> Result<()> {
                         force,
                         no_cache,
                         false,
+                        false,
                         cli.host,
                     )?;
                 }
@@ -287,6 +295,13 @@ fn main() -> Result<()> {
                             &project_path,
                             force,
                             dry_run,
+                            cli.host.as_deref(),
+                        )?;
+                    }
+                    OverlayAction::Upgrade { force } => {
+                        commands::overlay::upgrade_command(
+                            &project_path,
+                            force,
                             cli.host.as_deref(),
                         )?;
                     }

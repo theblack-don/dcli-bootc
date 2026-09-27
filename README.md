@@ -4,6 +4,9 @@ A declarative **bootc** image configuration manager. Define your system
 packages, repos, files, services, and scripts in YAML modules, then generate a
 Containerfile and build the image.
 
+The package also installs a short `dcli` alias, so `dcli build`, `dcli update`,
+and the rest work exactly like `dcli-bootc ...`.
+
 ## Installing from COPR
 
 ### RakuOS (rum usr-overlay) — recommended
@@ -86,8 +89,11 @@ sudo dnf install dcli-bootc    # gone after the next reboot
 | `rollback` | Roll back to the previous bootc deployment |
 | `update`| Pull the latest base image, rebuild, and switch to the fresh build |
 | `status`| Show bootc deployment status and project info |
-| `overlay` | Import / sync the RakuOS `rum` usr-overlay with a module (RakuOS hosts only) |
+| `overlay` | Import / sync / upgrade the host usr-overlay with a module (RakuOS `rum` or kineticos `kinpkg`) |
 | `dotfiles` | Apply profile dotfiles into ~ as symlinks (also runs on build/update) |
+
+Every command is also available through the short `dcli` alias (`dcli update`,
+`dcli overlay status`, ...).
 
 ## Quickstart
 
@@ -147,9 +153,10 @@ exclude_modules:         # removed from the profile's list (optional)
 
 base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable   # optional override
 
-# RakuOS only: use this host's own rum usr-overlay manifest instead of the
+# usr-overlay only: use this host's own overlay manifest instead of the
 # profile's `overlay_module`. The module lives in modules/ like any other.
 overlay_module: overlay-desktop
+overlay_backend: auto        # auto | rum | kinpkg (optional)
 ```
 
 The active host is chosen by the global `--host <name>` flag, or
@@ -332,15 +339,24 @@ the image and does not run dnf — to freeze the kernel across rebases, pin the
 **base image** by digest (`base_image: …@sha256:…`) as well. Pinning only
 works while the kernel repo still carries that version.
 
-## RakuOS (rum usr-overlay)
+## Persistent usr-overlay (RakuOS rum / kineticos kinpkg)
 
-RakuOS mounts a persistent overlayfs over `/usr`, and its `rum` package
-manager installs packages into it live (`rum install`). That is the point of
-RakuOS: they are installed in real time, survive image updates, and are not
-baked into the image. dcli-bootc keeps them that way — it just makes the set
-declarative instead of clicking through the software center. (Install
-`dcli-bootc` itself with `rum` — see
-[Installing from COPR](#rakuos-rum-usr-overlay--recommended).)
+Some atomic images mount a persistent overlayfs over `/usr` so a native
+package manager can install packages into it live — they survive image
+updates and are not baked into the image. dcli-bootc keeps them that way; it
+just makes the set declarative. Two backends are supported:
+
+* **`rum`** — RakuOS. `rum install` writes into the overlay and records names
+  in `/var/lib/rakuos/packages.list`. (Install `dcli-bootc` itself with `rum`
+  — see [Installing from COPR](#rakuos-rum-usr-overlay--recommended).)
+* **`kinpkg`** — kineticos. A persistent `/usr` overlay (shipped by the
+  project's `overlay` module) with the `kinpkg` command as the installer,
+  recorded in `/var/lib/kineticos/overlay/installed.txt`. Unlike RakuOS,
+  kineticos has a single merged rpmdb, so base-provided packages are read from
+  a list dcli-bootc bakes into the image at build time.
+
+Pick one with `overlay_backend: auto | rum | kinpkg` (default `auto` — RakuOS
+`rum` when present on the host, otherwise `kinpkg`).
 
 Point the profile at a module that holds the overlay manifest. Do **not** add
 it to `enabled_modules` — its packages belong in the overlay, not the image:
@@ -349,7 +365,8 @@ it to `enabled_modules` — its packages belong in the overlay, not the image:
 # profile.yaml
 enabled_modules:
   - base
-overlay_module: overlay      # NOT enabled_modules — rum-managed, overlay-only
+overlay_module: overlay      # NOT enabled_modules — overlay-managed, overlay-only
+overlay_backend: kinpkg      # optional: auto | rum | kinpkg
 ```
 
 For a project that builds for several machines, give each `hosts/<name>.yaml`
@@ -402,6 +419,22 @@ dcli-bootc overlay sync --dry-run  # show what would change
 `build` and `update` run the same sync after a successful image build, so a
 rebuild also brings the live overlay in line with the manifest.
 
+`update` goes one step further and also **upgrades the packages already in the
+overlay** (the backend's own upgrade verb — `kinpkg upgrade` / `rum upgrade`),
+so a system update refreshes the overlay too, not just add/remove to match the
+manifest. `build` does not do this. It prompts before applying, and `--force`
+skips the prompt:
+
+```bash
+dcli-bootc overlay upgrade            # or: dcli overlay upgrade
+dcli-bootc overlay upgrade --force    # skip the confirmation
+```
+
+Without `--force`, dcli-bootc passes `-y` to `kinpkg` (or `rum`) only *after*
+you approve, so dnf does not prompt a second time. Running `kinpkg install/
+remove/upgrade` by hand behaves like normal `dnf`: it asks for confirmation
+unless you pass `-y`/`--assumeyes`.
+
 Once a package has been baked into *and booted from* the base image it no
 longer needs to live in the overlay module. `prune` drops those:
 
@@ -421,10 +454,15 @@ Locally sideloaded RPMs tracked in `/var/lib/rakuos/packages-rpm.list` cannot
 be reproduced from a repo; `import` prints them so you can declare them as
 `local_rpms`/`remote_rpms` instead (see [Local RPMs](#local-rpms)).
 
-These commands are no-ops on hosts without `rum`, and on projects without
-`overlay_module`, so non-RakuOS projects are unaffected. If you do add the
-manifest module to `enabled_modules`, `gen`/`build` warn: its packages would
-then be baked into the image as well as installed in the overlay.
+These commands are no-ops on hosts without a usable overlay backend, and on
+projects without `overlay_module`, so projects that don't use an overlay are
+unaffected. If you do add the manifest module to `enabled_modules`,
+`gen`/`build` warn: its packages would then be baked into the image as well as
+installed in the overlay.
+
+On kineticos the live-overlay reset step is skipped (`kinpkg` has no
+`rakuos reset-overlay` equivalent): `clean` rewrites the recorded package
+lists, and the change takes effect on the next overlay rebuild.
 
 ## Dotfiles
 
@@ -559,6 +597,12 @@ dcli-bootc update            # Pull latest base image, rebuild, and switch
 dcli-bootc update --nvidia   # Update using the NVIDIA base image variant
 dcli-bootc update --reboot   # Same, then reboot
 ```
+
+`update` always pulls the latest base image, rebuilds on top of it, reconciles
+the live usr-overlay to your manifest, and **upgrades the overlay's existing
+packages** (after a confirmation; see
+[Persistent usr-overlay](#persistent-usr-overlay-rakuos-rum--kineticos-kinpkg)).
+`build` leaves the overlay packages as-is.
 
 This is the flow `dcli-bootc build` offers to hand off to when it detects that
 your local base image is outdated.

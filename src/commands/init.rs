@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 
-use crate::config::{PackageManager, Profile, Module, RepoConfig, Scripts, RemoteRpm};
+use crate::config::{OverlayBackend, PackageManager, Profile, Module, RepoConfig, Scripts, RemoteRpm};
 use crate::project;
 
 pub fn run(name: Option<String>, from: Option<String>, force: bool) -> Result<()> {
@@ -70,6 +70,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         package_manager: PackageManager::default(),
         dotfiles: vec![],
         overlay_module: None,
+        overlay_backend: OverlayBackend::default(),
         kernel: None,
     };
     let profile_yaml = serde_yaml::to_string(&profile)?;
@@ -151,6 +152,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         package_manager: PackageManager::default(),
         dotfiles: vec![],
         overlay_module: None,
+        overlay_backend: OverlayBackend::default(),
         kernel: None,
     };
     std::fs::write(
