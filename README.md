@@ -466,8 +466,6 @@ lists, and the change takes effect on the next overlay rebuild.
 
 ## Dotfiles
 
-## Dotfiles
-
 Drop per-app config directories or files into the project's `dotfiles/`
 directory and list them in `profile.yaml`:
 
