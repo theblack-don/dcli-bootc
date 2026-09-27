@@ -88,6 +88,7 @@ pub fn run(
     println!();
 
     // ── Rebuild the custom image on the fresh base, then switch ──
-    // (skip the freshness check — we just pulled the base image)
-    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache, true, host)
+    // (skip the freshness check — we just pulled the base image; upgrade the
+    // overlay's packages too, so one `update` refreshes image + overlay)
+    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache, true, true, host)
 }

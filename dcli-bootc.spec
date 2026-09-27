@@ -29,11 +29,14 @@ cargo build --release
 
 %install
 install -Dm0755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
+# Short alias so users can type `dcli build`, `dcli update`, ...
+ln -s %{name} %{buildroot}%{_bindir}/dcli
 
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/%{name}
+%{_bindir}/dcli
 
 %changelog
 * Sun Jul 19 2026 Black Don <theblackdonatello@gmail.com> - 0.1.0-1

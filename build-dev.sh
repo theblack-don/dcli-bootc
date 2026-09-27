@@ -79,16 +79,21 @@ read -rp "Install to ${INSTALL_DIR}/dcli-bootc? [y/N] " ans < /dev/tty || ans=""
 if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
   if [[ "$USE_SUDO" == "1" ]]; then
     sudo cp "$PACKAGED" "${INSTALL_DIR}/dcli-bootc"
+    sudo ln -sf dcli-bootc "${INSTALL_DIR}/dcli"
   else
     mkdir -p "$INSTALL_DIR"
     cp "$PACKAGED" "${INSTALL_DIR}/dcli-bootc"
+    ln -sf dcli-bootc "${INSTALL_DIR}/dcli"
   fi
   echo -e "${GREEN}✓ Installed:${NC} $(command -v dcli-bootc || echo "${INSTALL_DIR}/dcli-bootc")"
+  echo -e "  Alias:    ${CYAN}dcli${NC} (→ dcli-bootc)"
 else
   echo "  Install later with:"
   if [[ "$USE_SUDO" == "1" ]]; then
     echo -e "    ${YELLOW}sudo cp '$PACKAGED' '${INSTALL_DIR}/dcli-bootc'${NC}"
+    echo -e "    ${YELLOW}sudo ln -sf dcli-bootc '${INSTALL_DIR}/dcli'${NC}"
   else
     echo -e "    ${YELLOW}cp '$PACKAGED' '${INSTALL_DIR}/dcli-bootc'${NC}"
+    echo -e "    ${YELLOW}ln -sf dcli-bootc '${INSTALL_DIR}/dcli'${NC}"
   fi
 fi

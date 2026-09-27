@@ -22,6 +22,7 @@ pub fn run(
     force: bool,
     no_cache: bool,
     skip_freshness_check: bool,
+    upgrade_overlay: bool,
     host: Option<String>,
 ) -> Result<()> {
     let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
@@ -138,11 +139,21 @@ pub fn run(
         }
     }
 
-    // ── Reconcile the RakuOS usr-overlay with the modules: packages deleted
-    // from a module are uninstalled from the host overlay with rum. No-op on
-    // non-RakuOS hosts or projects without overlay_module.
+    // ── Reconcile the host usr-overlay with the modules: packages deleted
+    // from a module are uninstalled from the host overlay. No-op on hosts
+    // without a usable overlay backend or projects without overlay_module.
     if let Err(e) = crate::commands::overlay::sync(project_dir, &profile, force, false, false) {
         eprintln!("{} Overlay sync failed: {:#}", "!".yellow(), e);
+    }
+
+    // ── On `update`, also refresh the packages already installed in the
+    // overlay: sync only adds/removes to match the manifest, so without this
+    // they'd stay at their old versions. No-op on hosts without a usable
+    // overlay backend or projects without overlay_module.
+    if upgrade_overlay {
+        if let Err(e) = crate::commands::overlay::upgrade(&profile, force, true) {
+            eprintln!("{} Overlay upgrade failed: {:#}", "!".yellow(), e);
+        }
     }
 
     // ── Reconcile the invoking user's flatpak installation with the modules'
