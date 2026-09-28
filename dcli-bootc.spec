@@ -1,5 +1,5 @@
 Name:           dcli-bootc
-Version:        0.1.0
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Declarative bootc image configuration manager
 
@@ -39,5 +39,8 @@ ln -s %{name} %{buildroot}%{_bindir}/dcli
 %{_bindir}/dcli
 
 %changelog
+* Mon Sep 28 2026 Black Don <theblackdonatello@gmail.com> - 0.5.0-1
+- Version bump to 0.5.0
+
 * Sun Jul 19 2026 Black Don <theblackdonatello@gmail.com> - 0.1.0-1
 - Initial package
