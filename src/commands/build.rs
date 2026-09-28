@@ -139,6 +139,38 @@ pub fn run(
         }
     }
 
+    // ── Offer to snapshot live overlay installs before sync removes the ones
+    // the manifest doesn't declare. A package installed with dnf/kinpkg since
+    // the last import would otherwise be deleted before the user can import it.
+    if !force {
+        match crate::commands::overlay::pending_removals(project_dir, &profile) {
+            Ok(pending) if !pending.is_empty() => {
+                println!();
+                println!(
+                    "{} The live overlay has {} package(s) not declared in '{}'; sync would remove them:",
+                    "!".yellow(),
+                    pending.len(),
+                    profile.overlay_module.as_deref().unwrap_or("?"),
+                );
+                for p in &pending {
+                    println!("    {} {}", "+".green(), p);
+                }
+                if bootc::confirm("Import them into the overlay module before syncing?") {
+                    if let Err(e) = crate::commands::overlay::import(
+                        project_dir,
+                        false,
+                        true,
+                        active_host.as_deref(),
+                    ) {
+                        eprintln!("{} Overlay import failed: {:#}", "!".yellow(), e);
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("{} Could not check overlay drift: {:#}", "!".yellow(), e),
+        }
+    }
+
     // ── Reconcile the host usr-overlay with the modules: packages deleted
     // from a module are uninstalled from the host overlay. No-op on hosts
     // without a usable overlay backend or projects without overlay_module.

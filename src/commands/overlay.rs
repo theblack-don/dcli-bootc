@@ -90,12 +90,11 @@ fn base_provided_packages(
                 }
             }
         }
-        // A module that removes a package means the image will not provide it.
-        for rm in &modules {
-            for removed in &rm.module.remove {
-                provided.remove(removed);
-            }
-        }
+    }
+
+    // A module that removes a package means the image will not provide it.
+    for removed in removed_packages(project_dir, profile) {
+        provided.remove(&removed);
     }
 
     // The booted base image's packages, as far as the backend can determine.
@@ -104,6 +103,20 @@ fn base_provided_packages(
     }
 
     provided
+}
+
+/// Package names the enabled modules explicitly remove from the image. These
+/// must never be re-introduced through the overlay manifest: a stale rpmdb
+/// entry in the live overlay would otherwise be snapshotted by `import` and
+/// then kept installed by `sync`.
+fn removed_packages(project_dir: &Path, profile: &Profile) -> HashSet<String> {
+    let mut removed = HashSet::new();
+    if let Ok(modules) = module::load_enabled_modules(project_dir, &profile.enabled_modules) {
+        for rm in &modules {
+            removed.extend(rm.module.remove.iter().cloned());
+        }
+    }
+    removed
 }
 
 /// Pull base-image-provided packages out of a removal list, returning them
@@ -159,7 +172,15 @@ pub fn import(
     let (module_name, backend) = require_overlay(&profile)?;
     let backend: &dyn OverlayBackend = &*backend;
 
-    let installed = backend.installed_packages()?;
+    let mut installed = backend.installed_packages()?;
+    let removed = removed_packages(project_dir, &profile);
+    let skipped: Vec<String> = installed
+        .iter()
+        .filter(|p| removed.contains(*p))
+        .cloned()
+        .collect();
+    installed.retain(|p| !removed.contains(p));
+
     let path = config::module_path(project_dir, module_name)
         .unwrap_or_else(|| project_dir.join("modules").join(format!("{}.yaml", module_name)));
 
@@ -169,6 +190,15 @@ pub fn import(
         installed.len(),
         path.display()
     );
+
+    if !skipped.is_empty() {
+        println!(
+            "  {} Skipping {} package(s) the image removes: {}",
+            "!".yellow(),
+            skipped.len(),
+            skipped.join(", ")
+        );
+    }
 
     if installed.is_empty() {
         println!("  {}", "Overlay has no packages — nothing to write.".dimmed());
@@ -206,6 +236,32 @@ pub fn import(
         backend.tool()
     );
     Ok(())
+}
+
+/// Live overlay packages that are not declared in the overlay module and that
+/// the base image does not provide — exactly the packages `sync` would remove.
+/// Used by build/update to offer an import before those packages are deleted.
+pub fn pending_removals(project_dir: &Path, profile: &Profile) -> Result<Vec<String>> {
+    if profile.overlay_module.is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(backend) = overlay::select(profile.overlay_backend) else {
+        return Ok(Vec::new());
+    };
+    let backend: &dyn OverlayBackend = &*backend;
+
+    let manifest = manifest_packages(project_dir, profile)?;
+    if manifest.is_empty() {
+        // `sync` treats an empty manifest as "leave the live overlay alone".
+        return Ok(Vec::new());
+    }
+    let installed = backend.installed_packages()?;
+    let (_, mut to_remove) = diff(&installed, &manifest);
+    let _ = take_retained(
+        &mut to_remove,
+        &base_provided_packages(project_dir, profile, backend),
+    );
+    Ok(to_remove)
 }
 
 /// Write the overlay packages into the module, preserving any other keys
@@ -1061,6 +1117,26 @@ mod tests {
         assert!(out.contains("keep me"), "{out}");
         assert!(out.contains("echo hi"), "{out}");
         assert!(out.contains("- steam"), "{out}");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn removed_packages_reads_enabled_module_removals() {
+        let dir = std::env::temp_dir().join(format!("dcli-removals-test-{}", std::process::id()));
+        let modules = dir.join("modules");
+        std::fs::create_dir_all(&modules).unwrap();
+        std::fs::write(
+            modules.join("removals.yaml"),
+            "description: test\nremove:\n  - fcitx5\n  - hid-fanatecff\n",
+        )
+        .unwrap();
+        let mut profile = profile_with_overlay(None);
+        profile.enabled_modules = vec!["removals".to_string()];
+
+        let removed = removed_packages(&dir, &profile);
+        assert!(removed.contains("fcitx5"));
+        assert!(removed.contains("hid-fanatecff"));
+        assert_eq!(removed.len(), 2);
         std::fs::remove_dir_all(&dir).ok();
     }
 
