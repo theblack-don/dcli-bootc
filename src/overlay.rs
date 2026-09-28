@@ -22,7 +22,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use crate::config::OverlayBackend as BackendPref;
 
@@ -325,11 +325,11 @@ impl OverlayBackend for KinpkgBackend {
     }
 
     fn available(&self) -> bool {
-        Path::new(Self::BASE).is_dir() && (which("kinpkg").is_some() || which("ki").is_some())
+        Path::new(Self::BASE).is_dir() && kinpkg_bin().is_some()
     }
 
     fn installed_packages(&self) -> Result<Vec<String>> {
-        Ok(read_list_optional(Self::LIST))
+        read_root_list(Self::LIST)
     }
 
     fn install_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
@@ -361,7 +361,7 @@ impl OverlayBackend for KinpkgBackend {
     }
 
     fn installed_local_rpms(&self) -> Vec<String> {
-        read_list_optional(Self::RPM_LIST)
+        read_root_list(Self::RPM_LIST).unwrap_or_default()
     }
 
     fn staged_local_rpm(&self, name: &str) -> Option<PathBuf> {
@@ -391,6 +391,19 @@ impl OverlayBackend for KinpkgBackend {
     }
 }
 
+/// The kinpkg installer. Prefer the image's own locations: a user binary that
+/// merely shares the `ki` shorthand (e.g. kinetic-ide, via ~/.local/bin) must
+/// never be mistaken for the overlay tool.
+fn kinpkg_bin() -> Option<PathBuf> {
+    for path in ["/usr/bin/kinpkg", "/usr/bin/ki"] {
+        let path = Path::new(path);
+        if path.is_file() {
+            return Some(path.to_path_buf());
+        }
+    }
+    which("kinpkg")
+}
+
 /// Install/remove overlay packages with `kinpkg`.
 fn run_kinpkg(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
     if pkgs.is_empty() {
@@ -400,9 +413,7 @@ fn run_kinpkg(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
         println!("  (dry run) would run: sudo kinpkg {} {}", action, pkgs.join(" "));
         return Ok(());
     }
-    let bin = which("kinpkg")
-        .or_else(|| which("ki"))
-        .context("kinpkg not found on PATH")?;
+    let bin = kinpkg_bin().context("kinpkg not found on PATH")?;
     let mut cmd = Command::new("sudo");
     // dcli-bootc has already confirmed with the user, so tell kinpkg to skip
     // dnf's own prompt (kinpkg forwards -y to dnf).
@@ -418,9 +429,7 @@ fn run_kinpkg(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
 
 /// Upgrade every overlay-installed package with `kinpkg upgrade`.
 fn run_kinpkg_upgrade() -> Result<()> {
-    let bin = which("kinpkg")
-        .or_else(|| which("ki"))
-        .context("kinpkg not found on PATH")?;
+    let bin = kinpkg_bin().context("kinpkg not found on PATH")?;
     let status = Command::new("sudo")
         .arg(bin)
         .arg("upgrade")
@@ -440,6 +449,40 @@ fn read_list_optional(path: &str) -> Vec<String> {
     std::fs::read_to_string(path)
         .map(|raw| parse_list(&raw))
         .unwrap_or_default()
+}
+
+/// Read and parse a root-owned state list (kinpkg's live records). kinpkg's
+/// state directory is 0700 root, so a normal user gets EACCES — fall back to
+/// reading through `sudo`. An absent file is an empty list, not an error.
+fn read_root_list(path: &str) -> Result<Vec<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => return Ok(parse_list(&raw)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {}
+        Err(e) => return Err(e).with_context(|| format!("Failed to read {}", path)),
+    }
+
+    if !sudo_succeeds(&["test", "-f", path])? {
+        return Ok(Vec::new());
+    }
+    let out = Command::new("sudo")
+        .args(["cat", "--", path])
+        .stdin(Stdio::inherit())
+        .output()
+        .with_context(|| format!("Failed to execute 'sudo cat {}'", path))?;
+    if !out.status.success() {
+        anyhow::bail!("sudo cat {} failed", path);
+    }
+    Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
+}
+
+/// Run `sudo <args>` and report whether it succeeded (output discarded).
+fn sudo_succeeds(args: &[&str]) -> Result<bool> {
+    let status = Command::new("sudo")
+        .args(args)
+        .status()
+        .with_context(|| format!("Failed to execute 'sudo {}'", args.join(" ")))?;
+    Ok(status.success())
 }
 
 fn parse_list(raw: &str) -> Vec<String> {
@@ -557,6 +600,12 @@ mod tests {
     fn parses_names_skipping_comments_and_blanks() {
         let got = parse_list("steam\n\n# comment\nkitty\nsteam \n");
         assert_eq!(got, vec!["kitty", "steam"]);
+    }
+
+    #[test]
+    fn read_root_list_missing_file_is_empty() {
+        let missing = "/nonexistent/dcli-bootc/installed.txt";
+        assert!(read_root_list(missing).unwrap().is_empty());
     }
 
     #[test]
