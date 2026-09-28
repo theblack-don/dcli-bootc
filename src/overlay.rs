@@ -10,10 +10,12 @@
 //!   `/var/lib/rakuos/rum-rpmdb`, so base and overlay packages are
 //!   distinguishable.
 //! * `kinpkg` — kineticos. A persistent overlayfs on `/usr` (shipped by the
-//!   project's `overlay` module) with `kinpkg` as the installer. The record
-//!   lives in `/var/lib/kineticos/overlay/installed.txt` and there is a single
-//!   merged rpmdb, so base-provided packages are read from a list baked into
-//!   the image at build time (see `BAKED_BASE_LIST`).
+//!   project's `overlay` module) with `kinpkg` as the installer. There is a
+//!   single merged rpmdb, so the overlay's packages are derived from the
+//!   manually-installed (`--userinstalled`) set minus a base-package list
+//!   baked into the image at build time (see `BAKED_BASE_LIST`). This catches
+//!   plain `dnf install` too, which also lands in the overlay. kinpkg's own
+//!   `/var/lib/kineticos/overlay/installed.txt` record is the fallback.
 //!
 //! Packages the base image provides are kept rather than removed — erasing one
 //! through the overlay unlinks a path that also exists in the base layer,
@@ -329,7 +331,23 @@ impl OverlayBackend for KinpkgBackend {
     }
 
     fn installed_packages(&self) -> Result<Vec<String>> {
-        read_root_list(Self::LIST)
+        // kineticos keeps one merged rpmdb inside the live overlay, and plain
+        // `dnf install` lands there too (bypassing kinpkg's record). So the
+        // authoritative overlay set is the manually-installed packages minus
+        // the base image's — catching dnf installs as well as kinpkg's.
+        //
+        // `--userinstalled` excludes dependency packages, so `overlay sync`
+        // never treats a manifest package's dependencies as removable. Fall
+        // back to kinpkg's own record when dnf or the baked base list is
+        // unavailable.
+        let Some(base) = self.base_packages().filter(|b| !b.is_empty()) else {
+            return read_root_list(Self::LIST);
+        };
+        let local: HashSet<String> = self.installed_local_rpms().into_iter().collect();
+        match userinstalled_names() {
+            Some(candidates) => Ok(overlay_only(candidates, &base, &local)),
+            None => read_root_list(Self::LIST),
+        }
     }
 
     fn install_packages(&self, pkgs: &[String], dry_run: bool) -> Result<()> {
@@ -497,6 +515,43 @@ fn parse_list(raw: &str) -> Vec<String> {
     pkgs
 }
 
+/// Keep only the candidate names that neither the base image nor a local RPM
+/// provides, sorted and deduped.
+fn overlay_only(
+    candidates: HashSet<String>,
+    base: &HashSet<String>,
+    local: &HashSet<String>,
+) -> Vec<String> {
+    let mut pkgs: Vec<String> = candidates
+        .into_iter()
+        .filter(|n| !base.contains(n) && !local.contains(n))
+        .collect();
+    pkgs.sort();
+    pkgs.dedup();
+    pkgs
+}
+
+/// Names dnf considers user-installed (not pulled in as dependencies), or
+/// `None` when dnf cannot report them. Reads the rpmdb; needs no root and no
+/// repo metadata.
+fn userinstalled_names() -> Option<HashSet<String>> {
+    let bin = which("dnf5").or_else(|| which("dnf"))?;
+    let out = Command::new(bin)
+        .args(["repoquery", "--userinstalled", "--qf", "%{name}\n"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let names: HashSet<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect();
+    (!names.is_empty()).then_some(names)
+}
+
 /// Run `rpm` and collect the queried names, or `None` on failure.
 fn rpm_names(args: &[&str]) -> Option<HashSet<String>> {
     let out = Command::new("rpm").args(args).output().ok()?;
@@ -606,6 +661,17 @@ mod tests {
     fn read_root_list_missing_file_is_empty() {
         let missing = "/nonexistent/dcli-bootc/installed.txt";
         assert!(read_root_list(missing).unwrap().is_empty());
+    }
+
+    #[test]
+    fn overlay_only_drops_base_and_local() {
+        let set = |items: &[&str]| -> HashSet<String> {
+            items.iter().map(|s| s.to_string()).collect()
+        };
+        let candidates = set(&["base-a", "local-a", "overlay-a"]);
+        let base = set(&["base-a"]);
+        let local = set(&["local-a"]);
+        assert_eq!(overlay_only(candidates, &base, &local), vec!["overlay-a"]);
     }
 
     #[test]
