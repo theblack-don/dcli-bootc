@@ -20,6 +20,7 @@ pub fn run(
     nvidia: bool,
     cache: bool,
     no_import: bool,
+    no_switch: bool,
     host: Option<String>,
 ) -> Result<()> {
     let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
@@ -41,11 +42,10 @@ pub fn run(
 
     // ── Show what the rebuild will do before pulling anything ──
     // (build::run skips its own plan output when invoked from here)
-    // Explicit --tag wins; otherwise a host build is tagged with the host name
-    let image_tag = tag
-        .clone()
-        .or_else(|| active_host.clone())
-        .unwrap_or_else(|| profile.default_tag.clone());
+    // Explicit --tag wins; otherwise a host build is tagged with the host name.
+    // NVIDIA builds land on their own `nvidia` tag so they never overwrite the
+    // default AMD/Intel image.
+    let image_tag = profile.effective_tag(tag.clone(), active_host.as_deref(), nvidia);
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
     let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
@@ -91,5 +91,7 @@ pub fn run(
     // ── Rebuild the custom image on the fresh base, then switch ──
     // (skip the freshness check — we just pulled the base image; upgrade the
     // overlay's packages too, so one `update` refreshes image + overlay)
-    build::run(project_dir, tag, nvidia, auto_reboot, force, !cache, no_import, true, true, host)
+    build::run(
+        project_dir, tag, nvidia, auto_reboot, force, !cache, no_import, no_switch, true, true, host,
+    )
 }

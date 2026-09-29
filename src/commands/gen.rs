@@ -51,6 +51,9 @@ pub fn run(project_dir: &Path, dry_run: bool, host: Option<String>) -> Result<()
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&build_sh_path, std::fs::Permissions::from_mode(0o755))?;
 
+    // Stage the project snapshot for `include_project` (no-op otherwise).
+    generator::sync_project_snapshot(project_dir, &profile)?;
+
     let name = project::get_project_name(project_dir)?;
     let cf_lines = files.containerfile.lines().count();
     let bs_lines = files.build_sh.lines().count();

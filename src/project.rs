@@ -132,6 +132,29 @@ pub fn get_project_name(path: &Path) -> Result<String> {
         .unwrap_or_else(|| "unknown".to_string()))
 }
 
+/// True when the running host looks like kineticos: its `/usr` overlay state,
+/// the `kinpkg` tool, or an os-release identity. Used to default `init` to the
+/// kineticos project-template flow.
+pub fn is_kineticos() -> bool {
+    if Path::new("/var/lib/kineticos").exists() || Path::new("/usr/bin/kinpkg").exists() {
+        return true;
+    }
+    std::fs::read_to_string("/etc/os-release")
+        .map(|s| s.to_ascii_lowercase().contains("kineticos"))
+        .unwrap_or(false)
+}
+
+/// Where a kineticos install keeps its canonical project template. Prefers the
+/// read-only copy baked into the image (`/usr/share/kineticos/project`), then
+/// falls back to `~/.config/kineticos` for manual overrides / legacy installs.
+pub fn kineticos_template_dir() -> Option<PathBuf> {
+    let baked = PathBuf::from("/usr/share/kineticos/project");
+    if baked.join("profile.yaml").is_file() {
+        return Some(baked);
+    }
+    dirs::config_dir().map(|d| d.join("kineticos"))
+}
+
 /// Create the .dcli-bootc marker file in the project directory
 pub fn create_marker(path: &Path) -> Result<()> {
     let marker = path.join(MARKER_FILE);

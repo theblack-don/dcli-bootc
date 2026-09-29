@@ -22,6 +22,7 @@ pub fn run(
     force: bool,
     no_cache: bool,
     no_import: bool,
+    no_switch: bool,
     skip_freshness_check: bool,
     upgrade_overlay: bool,
     host: Option<String>,
@@ -37,10 +38,10 @@ pub fn run(
         &profile.base_image
     };
 
-    // Explicit --tag wins; otherwise a host build is tagged with the host name
-    let image_tag = tag
-        .or_else(|| active_host.clone())
-        .unwrap_or_else(|| profile.default_tag.clone());
+    // Explicit --tag wins; otherwise a host build is tagged with the host name.
+    // NVIDIA builds land on their own `nvidia` tag so they never overwrite the
+    // default AMD/Intel image.
+    let image_tag = profile.effective_tag(tag, active_host.as_deref(), nvidia);
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
 
@@ -65,6 +66,7 @@ pub fn run(
             auto_reboot,
             force,
             no_import,
+            no_switch,
             active_host.clone(),
         )?
     {
@@ -226,7 +228,13 @@ pub fn run(
 
     // ── Bootc switch prompt ──
     println!();
-    if force || bootc::confirm("Switch bootc deployment to this image?") {
+    if no_switch {
+        println!(
+            "  {} Switch skipped (--no-switch). Stage later with: dcli-bootc switch --tag {}",
+            "•".dimmed(),
+            image_tag
+        );
+    } else if force || bootc::confirm("Switch bootc deployment to this image?") {
         let staged = bootc::switch_to_local(&image_ref)?;
         bootc::maybe_reboot(auto_reboot, staged);
     } else {
@@ -249,6 +257,7 @@ fn handoff_to_update_if_stale(
     auto_reboot: bool,
     force: bool,
     no_import: bool,
+    no_switch: bool,
     host: Option<String>,
 ) -> Result<bool> {
     match registry::check_base_freshness(base_image) {
@@ -286,6 +295,7 @@ fn handoff_to_update_if_stale(
                     nvidia,
                     false,
                     no_import,
+                    no_switch,
                     host,
                 )?;
                 return Ok(true);
@@ -311,6 +321,9 @@ fn sync_generated(project_dir: &Path, profile: &config::Profile, host: Option<&s
     let current_sh = std::fs::read_to_string(&build_sh_path).unwrap_or_default();
 
     if current_cf == generated.containerfile && current_sh == generated.build_sh {
+        // Generated text is unchanged, but the project snapshot still needs to
+        // exist (and to disappear when `include_project` is turned off).
+        generator::sync_project_snapshot(project_dir, profile)?;
         return Ok(());
     }
 
@@ -327,6 +340,9 @@ fn sync_generated(project_dir: &Path, profile: &config::Profile, host: Option<&s
 
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(&build_sh_path, std::fs::Permissions::from_mode(0o755))?;
+
+    // Keep the baked project snapshot in sync independently of the text files.
+    generator::sync_project_snapshot(project_dir, profile)?;
 
     Ok(())
 }

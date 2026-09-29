@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -456,6 +456,19 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         ));
     }
 
+    // ── Project snapshot (`include_project`) ──
+    // Copy the project's own source into the image so a running system carries
+    // its recipe and `dcli-bootc init` can reproduce/fork it offline. The tree
+    // is staged in build_files/project by `sync_project_snapshot`.
+    if profile.include_project {
+        let dest = project_snapshot_dir(profile);
+        lines.push(String::new());
+        lines.push("# === project snapshot ===".to_string());
+        lines.push("# The project's own source, baked in for offline reproduce/fork.".to_string());
+        lines.push(format!("mkdir -p {}", dest));
+        lines.push(format!("rsync -rlptD --delete /ctx/project/ {}/", dest));
+    }
+
     // ── Final cleanup ──
     lines.push(String::new());
     lines.push("# === cleanup ===".to_string());
@@ -471,6 +484,82 @@ fn overlay_base_list_dir() -> &'static str {
         Some((dir, _)) => dir,
         None => "/usr/share/dcli-bootc",
     }
+}
+
+/// In-image directory a project snapshot is copied to. Named after the project
+/// so an image can carry exactly one recipe.
+pub fn project_snapshot_dir(profile: &Profile) -> String {
+    let name = profile.name.replace('/', "-");
+    format!("/usr/share/{}/project", name)
+}
+
+/// Top-level entries never copied into the project snapshot.
+const PROJECT_SNAPSHOT_SKIP: &[&str] = &[
+    ".git",
+    ".dcli-bootc",
+    "build_files",
+    "output",
+    "target",
+];
+
+/// Stage the project's source tree under `build_files/project/` so the
+/// generated build can copy it into the image. Removes a stale snapshot when
+/// the profile does not opt in.
+pub fn sync_project_snapshot(project_dir: &Path, profile: &Profile) -> Result<()> {
+    let dest = project_dir.join("build_files").join("project");
+    if dest.exists() {
+        std::fs::remove_dir_all(&dest)
+            .with_context(|| format!("Failed to clean {}", dest.display()))?;
+    }
+    if !profile.include_project {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&dest)
+        .with_context(|| format!("Failed to create {}", dest.display()))?;
+    copy_project_tree(project_dir, &dest)
+}
+
+/// Copy the project's top-level entries into the snapshot directory, skipping
+/// VCS and generated/transient directories.
+fn copy_project_tree(src_root: &Path, dest_root: &Path) -> Result<()> {
+    for entry in std::fs::read_dir(src_root)
+        .with_context(|| format!("Failed to read {}", src_root.display()))?
+    {
+        let entry = entry?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if PROJECT_SNAPSHOT_SKIP.contains(&name.as_ref()) {
+            continue;
+        }
+        let target = dest_root.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_tree_recursive(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), &target)
+                .with_context(|| format!("Failed to copy {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_tree_recursive(src: &Path, dest: &Path) -> Result<()> {
+    std::fs::create_dir_all(dest)
+        .with_context(|| format!("Failed to create {}", dest.display()))?;
+    for entry in std::fs::read_dir(src)
+        .with_context(|| format!("Failed to read {}", src.display()))?
+    {
+        let entry = entry?;
+        let target = dest.join(entry.file_name());
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            copy_tree_recursive(&entry.path(), &target)?;
+        } else if file_type.is_file() {
+            std::fs::copy(entry.path(), &target)
+                .with_context(|| format!("Failed to copy {}", entry.path().display()))?;
+        }
+    }
+    Ok(())
 }
 
 /// Emit a module's or the kernel's repo setup (COPRs, rpm repos, key imports,

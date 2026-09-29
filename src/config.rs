@@ -78,10 +78,31 @@ pub struct Profile {
     #[serde(default)]
     pub overlay_backend: OverlayBackend,
 
+    /// Bake this project's own source tree into the image at
+    /// `/usr/share/<name>/project/`, so a running system carries its recipe and
+    /// `dcli-bootc init` can reproduce or fork it offline.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub include_project: bool,
+
     /// Kernel management: which kernel the image ships and how it is pinned.
     /// Overridable wholesale per host (see `HostConfig::kernel`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel: Option<KernelConfig>,
+}
+
+impl Profile {
+    /// Resolve the local tag for a build/update. An explicit `--tag` wins, then
+    /// an active host overlay, then the variant default: `nvidia` for NVIDIA
+    /// builds, so they cannot overwrite the default AMD/Intel image.
+    pub fn effective_tag(&self, tag: Option<String>, host: Option<&str>, nvidia: bool) -> String {
+        tag.or_else(|| host.map(str::to_string)).unwrap_or_else(|| {
+            if nvidia {
+                "nvidia".to_string()
+            } else {
+                self.default_tag.clone()
+            }
+        })
+    }
 }
 
 /// A single dotfiles entry.
@@ -128,6 +149,10 @@ impl DotfileEntry {
 
 fn default_base_image() -> String {
     "ghcr.io/ublue-os/bazzite:stable".to_string()
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 fn default_tag() -> String {

@@ -27,11 +27,13 @@ convenience, not a safety requirement.
   sets `base_image` to the booted/tracked image ref, so upstream updates flow
   through the base. Copying upstream modules for full control is the secondary
   path (still supported, manual rebase).
-- **Canonical kineticos template lives at `~/.config/kineticos/`.** On a
-  kineticos host, bare `init` copies from there and seeds the live overlay.
-  `--from-image` forces the reconstruct-from-running-image path; `--template`
-  overrides the source dir. Populating that dir for ISO installs is tabled
-  (kineticos repo), not part of this change.
+- **Canonical kineticos template is baked into the image at
+  `/usr/share/kineticos/project/`** (read-only, version-matched with the running
+  image) via a generator `include_project` option. User projects are created in
+  `./<name>` and indexed by the registry. Bare `init` on kineticos prompts for
+  **Extend** (layer on the running image, upstream-tracked) vs **Fork** (full
+  copy, you own the upstream recipe). `--from-image` is retained for
+  non-kineticos/other use cases.
 
 ## Behavior Changes
 
@@ -90,6 +92,19 @@ to wipe it.
 - [ ] Task 10: Document the kineticos `init` flow and `~/.config/kineticos`
       contract; note the installer population is future work.
 
+## Phase 5: revised init (baked template + explicit modes)
+
+Supersedes the template-location parts of Phase 3.
+
+- [x] Task 11: Generator `include_project` option bakes the project tree into
+      `/usr/share/<name>/project/` (whole tree; exclude `.git`, `.dcli-bootc`,
+      `output/`, `target/`, `build_files/`).
+- [x] Task 12: Template resolution `--template` →
+      `/usr/share/kineticos/project` → `~/.config/kineticos`.
+- [x] Task 13: Bare `init` on kineticos prompts **Extend** vs **Fork**.
+- [x] Task 14: Add `--extend` / `--fork`; keep `--from-image` for generic use.
+- [x] Task 15: Update README and the kineticos README for the `/usr` template.
+
 ## Files Likely Touched
 
 - `src/commands/overlay.rs` — `sync` signature, quiet import helper.
@@ -115,10 +130,23 @@ to wipe it.
 | Kineticos detection false-positive | Low | Detect via os-release + runtime markers; allow `--template`/`--from-image` to override |
 | `~/.config/kineticos` missing | Low | Fall back to reconstructing a minimal project from `bootc status` |
 
+## Resolved During Implementation
+
+- Bare `init` on kineticos **prompts Extend vs Fork** (Phase 5, superseding the
+  earlier auto-copy). Extend layers on the running image and tracks upstream;
+  Fork copies the full recipe. Non-interactive defaults to Extend.
+- The canonical template is **baked into the image** at
+  `/usr/share/kineticos/project` (`include_project: true`), so no installer
+  seeding of `~/.config/kineticos` is needed; that path remains a manual/legacy
+  fallback.
+- `overlay sync` stayed "explicit sync removes" — no extra `--no-remove` guard.
+  build/update are additive, which was the safety goal.
+- The old interactive "import before sync?" prompt was replaced by an
+  informational note under `--no-import`, since additive sync removes nothing.
+- Auto-snapshot is idempotent: `import` skips rewriting when the module already
+  matches the live overlay.
+
 ## Open Questions
 
-- Does bare `init` on kineticos stay bare-`init` (copy) or become an alias of
-  `init --from-image`? Current plan: copy when the template exists, otherwise
-  reconstruct from the booted image.
-- Should `overlay sync` gain a `--no-remove` guard for extra safety, or is
-  "explicit sync removes" enough?
+- None outstanding. The baked template removes the earlier installer-seeding
+  work item.

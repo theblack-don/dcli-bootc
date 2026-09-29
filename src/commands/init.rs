@@ -1,10 +1,33 @@
 use anyhow::{Context, Result};
-use std::path::Path;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 
+use crate::bootc;
 use crate::config::{OverlayBackend, PackageManager, Profile, Module, RepoConfig, Scripts, RemoteRpm};
 use crate::project;
 
-pub fn run(name: Option<String>, from: Option<String>, force: bool) -> Result<()> {
+pub fn run(
+    name: Option<String>,
+    from: Option<String>,
+    from_image: bool,
+    extend: bool,
+    fork: bool,
+    template: Option<String>,
+    force: bool,
+) -> Result<()> {
+    if from.is_some() && (from_image || extend || fork || template.is_some()) {
+        anyhow::bail!("--from cannot be combined with --from-image/--extend/--fork/--template");
+    }
+    if from_image && (extend || fork) {
+        anyhow::bail!("--from-image cannot be combined with --extend/--fork");
+    }
+    if extend && fork {
+        anyhow::bail!("--extend cannot be combined with --fork");
+    }
+    if template.is_some() && (from_image || extend) {
+        anyhow::bail!("--template cannot be combined with --from-image/--extend");
+    }
+
     // Determine project path
     let project_dir = if let Some(n) = &name {
         let path = Path::new(n);
@@ -22,17 +45,36 @@ pub fn run(name: Option<String>, from: Option<String>, force: bool) -> Result<()
 
     if let Some(from_path) = from {
         import_existing(&project_dir, &from_path, force)?;
+    } else if from_image || extend {
+        scaffold_from_image(&project_dir, name.as_deref(), force)?;
+    } else if fork || template.is_some() {
+        copy_from_template(&project_dir, template.as_deref(), force)?;
+    } else if project::is_kineticos() {
+        // On kineticos, let the user choose how to use the image. Interactive
+        // only; scripts get the safer upstream-tracking default (extend).
+        if std::io::stdin().is_terminal() {
+            if prompt_extend() {
+                scaffold_from_image(&project_dir, name.as_deref(), force)?;
+            } else {
+                copy_from_kineticos(&project_dir, name.as_deref(), force)?;
+            }
+        } else {
+            scaffold_from_image(&project_dir, name.as_deref(), force)?;
+        }
     } else {
         scaffold_new(&project_dir, name.as_deref(), force)?;
     }
-
-    project::create_marker(&project_dir)?;
 
     let image_name = project_dir
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "my-image".to_string());
 
+    // Keep profile.name in sync with the project directory without reformatting
+    // (a serde round-trip would strip the template's comments).
+    set_profile_name(&project_dir, &image_name)?;
+
+    project::create_marker(&project_dir)?;
     project::register_project(&project_dir, &image_name, true)?;
 
     println!(
@@ -71,6 +113,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         dotfiles: vec![],
         overlay_module: None,
         overlay_backend: OverlayBackend::default(),
+        include_project: false,
         kernel: None,
     };
     let profile_yaml = serde_yaml::to_string(&profile)?;
@@ -107,8 +150,205 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
     std::fs::write(project_dir.join("modules").join("base.yaml"), &module_yaml)?;
 
     // Write .gitignore
-    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n*.AppImage\n*.appimage\n")?;
+    std::fs::write(
+        project_dir.join(".gitignore"),
+        "*.rpm\n*.AppImage\n*.appimage\nbuild_files/project/\n",
+    )?;
 
+    Ok(())
+}
+
+/// Copy a kineticos project template into `project_dir`, then snapshot the
+/// live overlay into the project's overlay module when one is configured.
+fn copy_template(project_dir: &Path, template: &Path, force: bool) -> Result<()> {
+    if !template.join("profile.yaml").is_file() {
+        anyhow::bail!(
+            "No dcli-bootc project template (profile.yaml) found at {}",
+            template.display()
+        );
+    }
+    if project_dir.join("profile.yaml").exists() && !force {
+        anyhow::bail!(
+            "{} already contains a project (profile.yaml). Use --force to overwrite.",
+            project_dir.display()
+        );
+    }
+
+    println!(
+        "{} Copying kineticos template from {}",
+        "▶".cyan(),
+        template.display()
+    );
+    copy_dir(template, project_dir)?;
+
+    // The copy is a new project: drop the template's marker and VCS metadata so
+    // it is not tied to the upstream repository.
+    let _ = std::fs::remove_file(project_dir.join(".dcli-bootc"));
+    if project_dir != template {
+        let _ = std::fs::remove_dir_all(project_dir.join(".git"));
+    }
+    for dir in ["modules", "files", "build_files", "rpms", "appimages", "dotfiles"] {
+        std::fs::create_dir_all(project_dir.join(dir))?;
+    }
+    if !project_dir.join(".gitignore").exists() {
+        std::fs::write(
+            project_dir.join(".gitignore"),
+            "*.rpm\n*.AppImage\n*.appimage\noutput/\nbuild_files/project/\n",
+        )?;
+    }
+
+    seed_overlay_module(project_dir);
+    Ok(())
+}
+
+/// Resolve the template directory to copy: an explicit `--template` wins,
+/// otherwise the built-in kineticos location when it contains a project.
+fn resolve_template(explicit: Option<&str>) -> Option<PathBuf> {
+    if let Some(path) = explicit {
+        return Some(PathBuf::from(path));
+    }
+    project::kineticos_template_dir().filter(|d| d.join("profile.yaml").is_file())
+}
+
+/// Explicit `--fork` / `--template`: copy a template, or explain what is missing.
+fn copy_from_template(project_dir: &Path, template: Option<&str>, force: bool) -> Result<()> {
+    match resolve_template(template) {
+        Some(dir) => copy_template(project_dir, &dir, force),
+        None => anyhow::bail!(
+            "no project template found — looked at /usr/share/kineticos/project and ~/.config/kineticos; pass --template <dir>"
+        ),
+    }
+}
+
+/// The user chose Fork interactively: copy the kineticos template, falling back
+/// to reconstruction if the image does not carry one.
+fn copy_from_kineticos(project_dir: &Path, name: Option<&str>, force: bool) -> Result<()> {
+    match resolve_template(None) {
+        Some(dir) => copy_template(project_dir, &dir, force),
+        None => {
+            println!(
+                "{} No kineticos project template at /usr/share/kineticos/project or ~/.config/kineticos — reconstructing from the running image.",
+                "!".yellow()
+            );
+            scaffold_from_image(project_dir, name, force)
+        }
+    }
+}
+
+/// Ask whether to extend (layer) or fork (copy). Defaults to extend.
+fn prompt_extend() -> bool {
+    use std::io::Write;
+    println!("How do you want to use the kineticos image?");
+    println!("  1) Extend  add your own packages/modules on top; kineticos keeps");
+    println!("             managing the base and its updates flow through it. (default)");
+    println!("  2) Fork    copy the full kineticos recipe so you can change anything;");
+    println!("             you take over upstream updates.");
+    print!("Choose [1]: ");
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input).ok();
+    !matches!(input.trim(), "2" | "f" | "fork")
+}
+
+/// Reconstruct a project that layers on the running booted image: `base_image`
+/// is the image the system tracks, so upstream kineticos updates flow through
+/// the base. Seeds the overlay module from the live overlay.
+fn scaffold_from_image(project_dir: &Path, name: Option<&str>, force: bool) -> Result<()> {
+    if project_dir.join("profile.yaml").exists() && !force {
+        anyhow::bail!(
+            "{} already contains a project (profile.yaml). Use --force to overwrite.",
+            project_dir.display()
+        );
+    }
+    scaffold_new(project_dir, name, force)?;
+
+    let mut profile = crate::config::load_profile(project_dir)?;
+    if let Some(base) = bootc_image_ref() {
+        profile.base_image = base;
+        profile.nvidia_base_image = None;
+    }
+    if project::is_kineticos() {
+        profile.overlay_module = Some("overlay-packages".to_string());
+        profile.overlay_backend = OverlayBackend::Kinpkg;
+    }
+    let has_overlay = profile.overlay_module.is_some();
+    std::fs::write(
+        project_dir.join("profile.yaml"),
+        serde_yaml::to_string(&profile)?,
+    )?;
+
+    if has_overlay {
+        seed_overlay_module(project_dir);
+    }
+    Ok(())
+}
+
+/// Best-effort snapshot of the live overlay into the project's overlay module.
+/// A missing backend (e.g. the project was copied on another machine) only
+/// prints a note; it can be seeded later with `dcli-bootc overlay import`.
+fn seed_overlay_module(project_dir: &Path) {
+    let configured = crate::config::load_profile(project_dir)
+        .map(|p| p.overlay_module.is_some())
+        .unwrap_or(false);
+    if !configured {
+        return;
+    }
+    if let Err(e) = crate::commands::overlay::import(project_dir, false, true, true, None) {
+        println!(
+            "  {} Could not record the live overlay in the project: {:#}",
+            "!".yellow(),
+            e
+        );
+    }
+}
+
+/// The pullable image reference the running system tracks, falling back to the
+/// booted image. Strips any ostree transport prefix and digest so the result
+/// can be used as a `FROM` for a fork built on another machine.
+fn bootc_image_ref() -> Option<String> {
+    let status = bootc::status().ok()?;
+    let raw = status.tracked_image.or(status.booted_image)?;
+    let mut s = raw.as_str();
+    for prefix in [
+        "ostree-unverified-registry:",
+        "ostree-unverified-image:",
+        "ostree-image-signed:",
+        "ostree-remote-registry:",
+        "ostree-remote-image:",
+        "containers-storage:",
+        "docker://",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            s = rest;
+            break;
+        }
+    }
+    let s = s.split('@').next().unwrap_or(s);
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Replace the top-level `name:` line in profile.yaml, preserving comments and
+/// formatting (a full serde round-trip would drop the template's comments).
+fn set_profile_name(project_dir: &Path, name: &str) -> Result<()> {
+    let path = project_dir.join("profile.yaml");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Ok(());
+    };
+    let mut out = String::with_capacity(content.len());
+    let mut replaced = false;
+    for line in content.lines() {
+        if !replaced && line.starts_with("name:") {
+            out.push_str(&format!("name: {}", name));
+            replaced = true;
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    if replaced {
+        std::fs::write(&path, out)
+            .with_context(|| format!("Failed to update {}", path.display()))?;
+    }
     Ok(())
 }
 
@@ -153,6 +393,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         dotfiles: vec![],
         overlay_module: None,
         overlay_backend: OverlayBackend::default(),
+        include_project: false,
         kernel: None,
     };
     std::fs::write(
@@ -205,7 +446,10 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
     }
 
     // Write .gitignore
-    std::fs::write(project_dir.join(".gitignore"), "*.rpm\n*.AppImage\n*.appimage\n")?;
+    std::fs::write(
+        project_dir.join(".gitignore"),
+        "*.rpm\n*.AppImage\n*.appimage\nbuild_files/project/\n",
+    )?;
 
     println!(
         "{} Imported project from {}",

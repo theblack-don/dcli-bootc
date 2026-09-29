@@ -106,11 +106,11 @@ output is not noisy.
 (overlay dir, `kinpkg`). Keep it conservative and overridable.
 
 **Acceptance criteria:**
-- [ ] Returns true on a kineticos-like host, false otherwise.
-- [ ] Failure to read os-release does not panic.
+- [x] Returns true on a kineticos-like host, false otherwise.
+- [x] Failure to read os-release does not panic.
 
 **Verification:**
-- [ ] `cargo check`
+- [x] `cargo check`
 
 **Dependencies:** None
 
@@ -123,10 +123,10 @@ output is not noisy.
 **Description:** Add the flags to the `Init` subcommand and pass them through.
 
 **Acceptance criteria:**
-- [ ] Flags parse and reach `commands::init::run`.
+- [x] Flags parse and reach `commands::init::run`.
 
 **Verification:**
-- [ ] `cargo check`
+- [x] `cargo check`
 
 **Dependencies:** None
 
@@ -142,11 +142,11 @@ template exists) uses the booted/tracked image ref as `base_image`; keeps the
 nvidia variant when it can be inferred, else drops it.
 
 **Acceptance criteria:**
-- [ ] `base_image` equals the booted image ref when available.
-- [ ] Falls back to the default base when `bootc status` is unavailable.
+- [x] `base_image` equals the booted image ref when available.
+- [x] Falls back to the default base when `bootc status` is unavailable.
 
 **Verification:**
-- [ ] `cargo check`
+- [x] `cargo check`
 
 **Dependencies:** Task 6
 
@@ -163,13 +163,13 @@ nvidia variant when it can be inferred, else drops it.
 Refuse to clobber an existing project without `--force`.
 
 **Acceptance criteria:**
-- [ ] Template copy reproduces `profile.yaml`, `modules/`, `files/`, `.gitignore`.
-- [ ] `profile.name` and the registered project name match the requested name.
-- [ ] Overlay module is seeded from live state (empty live = empty/absent module).
-- [ ] Missing template falls back to the from-image reconstruction.
+- [x] Template copy reproduces `profile.yaml`, `modules/`, `files/`, `.gitignore`.
+- [x] `profile.name` and the registered project name match the requested name.
+- [x] Overlay module is seeded from live state (empty live = empty/absent module).
+- [x] Missing template falls back to the from-image reconstruction.
 
 **Verification:**
-- [ ] `cargo check`
+- [x] `cargo check`
 
 **Dependencies:** Tasks 4-7
 
@@ -180,8 +180,8 @@ Refuse to clobber an existing project without `--force`.
 **Estimated scope:** M
 
 ## Checkpoint: Phase 3
-- [ ] `cargo check` clean
-- [ ] init flow reasoned for template-present and template-absent
+- [x] `cargo check` clean
+- [x] init flow reasoned for template-present and template-absent
 - [ ] Review with human before Phase 4
 
 ## Phase 4: Docs
@@ -191,11 +191,11 @@ Refuse to clobber an existing project without `--force`.
 explicit-remove flow (`overlay sync`), replacing the "run import first" guidance.
 
 **Acceptance criteria:**
-- [ ] README describes the new build/update behavior.
-- [ ] Remove-a-package flow is documented without ambiguity.
+- [x] README describes the new build/update behavior.
+- [x] Remove-a-package flow is documented without ambiguity.
 
 **Verification:**
-- [ ] Proofread against `tasks/plan.md`.
+- [x] Proofread against `tasks/plan.md`.
 
 **Dependencies:** Tasks 1-4
 
@@ -209,11 +209,11 @@ explicit-remove flow (`overlay sync`), replacing the "run import first" guidance
 `--template`, and the `~/.config/kineticos/` contract.
 
 **Acceptance criteria:**
-- [ ] README covers both fork models (layer vs copy-upstream).
-- [ ] Installer population of `~/.config/kineticos` marked as future work.
+- [x] README covers both fork models (layer vs copy-upstream).
+- [x] Installer population of `~/.config/kineticos` marked as future work.
 
 **Verification:**
-- [ ] Proofread against `tasks/plan.md`.
+- [x] Proofread against `tasks/plan.md`.
 
 **Dependencies:** Tasks 5-8
 
@@ -222,7 +222,91 @@ explicit-remove flow (`overlay sync`), replacing the "run import first" guidance
 
 **Estimated scope:** S
 
+## Phase 5: revised init (baked template + explicit modes)
+
+Supersedes the template-location parts of Phase 3.
+
+### Task 11: Generator `include_project` bakes the template
+**Description:** When `profile.yaml` sets `include_project: true`, `gen` emits a
+step copying the project tree into `/usr/share/<name>/project/` inside the
+image (whole tree minus VCS/generated/transient dirs).
+
+**Acceptance criteria:**
+- [x] Baked path contains `profile.yaml`, `modules/`, `files/`, `dotfiles/`.
+- [x] `.git`, `.dcli-bootc`, `output/`, `target/`, `build_files/` excluded.
+- [x] No-op when the option is absent.
+
+**Verification:** `cargo check`
+
+**Dependencies:** None
+
+**Files likely touched:** `src/generator.rs`, `src/config.rs`
+
+**Estimated scope:** M
+
+### Task 12: Template resolution order
+**Description:** `init` resolves the template from `--template`, then
+`/usr/share/kineticos/project`, then `~/.config/kineticos`.
+
+**Acceptance criteria:**
+- [x] `/usr/share/kineticos/project` is preferred over `~/.config/kineticos`.
+- [x] Missing everywhere falls back to `--from-image` reconstruction.
+
+**Verification:** `cargo check`
+
+**Dependencies:** Task 11
+
+**Files likely touched:** `src/project.rs`, `src/commands/init.rs`
+
+**Estimated scope:** S
+
+### Task 13: Extend/Fork prompt
+**Description:** Bare `init` on kineticos asks the user to choose Extend or
+Fork, explaining the upstream-tracking difference. Non-interactive default is
+Extend.
+
+**Acceptance criteria:**
+- [x] Prompt appears only on kineticos TTY without `--extend`/`--fork`.
+- [x] Non-interactive invocations never block on a prompt.
+
+**Verification:** `cargo check`
+
+**Dependencies:** Task 12
+
+**Files likely touched:** `src/commands/init.rs`
+
+**Estimated scope:** S
+
+### Task 14: `--extend` / `--fork` flags
+**Description:** Explicit modes; `--from-image` remains for non-kineticos hosts.
+
+**Acceptance criteria:**
+- [x] `--extend` = layer on the running image; `--fork` = copy the template.
+- [x] Combining incompatible modes errors clearly.
+
+**Verification:** `cargo check`
+
+**Dependencies:** Task 13
+
+**Files likely touched:** `src/main.rs`, `src/commands/init.rs`
+
+**Estimated scope:** S
+
+### Task 15: Docs
+**Description:** Document the baked template, the prompt, and both modes.
+
+**Acceptance criteria:**
+- [x] README overlay/init sections describe the `/usr` template and modes.
+
+**Verification:** Proofread against `tasks/plan.md`.
+
+**Dependencies:** Tasks 11-14
+
+**Files likely touched:** `README.md`
+
+**Estimated scope:** S
+
 ## Checkpoint: Complete
-- [ ] All acceptance criteria met
-- [ ] `cargo check` clean
+- [x] All acceptance criteria met
+- [x] `cargo check` clean
 - [ ] Ready for review

@@ -41,6 +41,26 @@ enum Commands {
         #[arg(long)]
         from: Option<String>,
 
+        /// Layer on the running booted image (base image = the tracked/booted
+        /// image ref). Generic; on kineticos prefer --extend
+        #[arg(long)]
+        from_image: bool,
+
+        /// Layer on the running kineticos image: add modules on top; kineticos
+        /// keeps managing the base and its updates flow through it
+        #[arg(long)]
+        extend: bool,
+
+        /// Copy the full project template for full control (base stays the
+        /// template's base; you take over upstream updates)
+        #[arg(long)]
+        fork: bool,
+
+        /// Project template to copy (default: /usr/share/kineticos/project,
+        /// then ~/.config/kineticos)
+        #[arg(long)]
+        template: Option<String>,
+
         /// Force overwrite existing files
         #[arg(short, long)]
         force: bool,
@@ -78,6 +98,10 @@ enum Commands {
         /// Do not snapshot the live overlay into the overlay module
         #[arg(long)]
         no_import: bool,
+
+        /// Build only; never prompt to switch the bootc deployment (for CI)
+        #[arg(long)]
+        no_switch: bool,
     },
 
     /// Switch the bootc deployment to the locally built image
@@ -130,6 +154,10 @@ enum Commands {
         /// Do not snapshot the live overlay into the overlay module
         #[arg(long)]
         no_import: bool,
+
+        /// Build only; never prompt to switch the bootc deployment (for CI)
+        #[arg(long)]
+        no_switch: bool,
     },
 
     /// Show bootc deployment status and project info
@@ -235,8 +263,16 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match cli.command {
-        Commands::Init { name, from, force } => {
-            commands::init::run(name, from, force)?;
+        Commands::Init {
+            name,
+            from,
+            from_image,
+            extend,
+            fork,
+            template,
+            force,
+        } => {
+            commands::init::run(name, from, from_image, extend, fork, template, force)?;
         }
         Commands::Rollback { force, reboot } => {
             commands::rollback::run(force, reboot)?;
@@ -255,6 +291,7 @@ fn main() -> Result<()> {
                     force,
                     no_cache,
                     no_import,
+                    no_switch,
                 } => {
                     commands::build::run(
                         &project_path,
@@ -264,6 +301,7 @@ fn main() -> Result<()> {
                         force,
                         no_cache,
                         no_import,
+                        no_switch,
                         false,
                         false,
                         cli.host,
@@ -283,6 +321,7 @@ fn main() -> Result<()> {
                     reboot,
                     cache,
                     no_import,
+                    no_switch,
                 } => {
                     commands::update::run(
                         &project_path,
@@ -292,6 +331,7 @@ fn main() -> Result<()> {
                         nvidia,
                         cache,
                         no_import,
+                        no_switch,
                         cli.host,
                     )?;
                 }

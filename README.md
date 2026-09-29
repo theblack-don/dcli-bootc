@@ -108,6 +108,30 @@ dcli-bootc gen
 dcli-bootc build
 ```
 
+On **kineticos**, bare `init` asks how you want to use the image:
+
+* **Extend** (recommended) — add your own packages/modules on top. The project's
+  `base_image` is the kineticos image the system tracks, so kineticos keeps
+  managing the base and its updates flow through automatically. The full
+  upstream recipe is readable at `/usr/share/kineticos/project/`; you don't edit
+  it.
+* **Fork** — copy the complete kineticos project for full control. `base_image`
+  stays the template's base (Bazzite), so you take over upstream updates.
+
+```bash
+dcli-bootc init my-image              # kineticos: prompted Extend/Fork
+dcli-bootc init --extend my-image     # layer on the running image
+dcli-bootc init --fork my-image       # full copy for full control
+dcli-bootc init --from-image my-image # generic layer on any bootc host
+dcli-bootc init --template <dir> my-image
+```
+
+Non-interactive `init` on kineticos defaults to **Extend**. `--from-image` sets
+`base_image` to the image the system tracks (stripped of any transport
+prefix/digest), so the project layers on the upstream image and keeps receiving
+its updates; `--nvidia` falls back to that base. The template is resolved from
+`--template`, then `/usr/share/kineticos/project`, then `~/.config/kineticos`.
+
 ## Project Structure
 
 ```
@@ -131,6 +155,11 @@ my-image/
 `profile.yaml` defines the base image and enabled modules. Each module in
 `modules/*.yaml` can declare packages, groups, repos, remote RPMs, local RPMs,
 appimages, flatpaks, files, services, and inline scripts.
+
+Set `include_project: true` in `profile.yaml` to bake the project's own source
+into the image at `/usr/share/<name>/project/`. That is what lets a running
+system reproduce or fork its recipe offline via `dcli-bootc init`. The snapshot
+excludes `.git`, `.dcli-bootc`, `build_files/`, `output/`, and `target/`.
 
 ## Multi-host
 
@@ -385,44 +414,45 @@ overlay_module: overlay-laptop
 Then `overlay import` / `sync` / `status` / `prune` / `clean` act on the active
 host's module (auto-detected from the hostname, or chosen with `--host`).
 
-Then snapshot what `rum` has installed into that module:
+The module records the live overlay; it is not a gatekeeper. `build`/`update`
+never remove a package just because the module does not list it. They install
+the packages the module declares and then **snapshot** the live overlay back
+into the module, so a plain `dnf`/`kinpkg` install is recorded automatically —
+you never have to run `overlay import` before updating:
 
-```bash
-# writes the overlay-installed packages into modules/overlay.yaml
-dcli-bootc overlay import
-```
-
-`import` reads `/var/lib/rakuos/packages.list` (the packages you asked `rum`
-for, not the dependency closure) and merges them into the module, preserving
-any other keys already there (`description`, `scripts`, ...). It refuses to
-clobber a module that already declares packages unless you pass `--force`.
-
-From then on the module is the manifest for the live overlay. `build`,
-`update`, and `overlay sync` reconcile the host overlay with `rum` — no
-software center, no manual `rum` commands:
-
-* packages **added to the module** are `rum install`ed into the overlay;
-* packages **removed from the module** are `rum remove`d from the overlay —
-  except packages the base image provides (declared by `enabled_modules` or
-  already present in the booted image), which are **kept**. Removing those
-  with `rum` would unlink through the merged `/usr` and leave an overlayfs
-  whiteout hiding the base image's copy, so `sync` leaves them in place and
-  reports them. To shed such a duplicate cleanly, drop it from the overlay
+* packages you install live (`sudo dnf install foo` / `sudo ki install foo`)
+  are kept, and `build`/`update` write them into the module for you;
+* packages **added to the module** are installed into the overlay on the next
+  `build`/`update` (or `overlay sync`);
+* packages the base image provides are **kept** even when the module drops
+  them — removing one would unlink through the merged `/usr` and leave an
+  overlayfs whiteout hiding the base image's copy, so `sync` leaves it in
+  place and reports it. To shed such a duplicate cleanly, drop it from the
   module/`packages.list` and run `rakuos reset-overlay --soft`.
+
+An explicit `overlay sync` is authoritative and *does* remove packages the
+module does not declare. To remove something, either uninstall it live and let
+the next snapshot drop it, or run:
 
 ```bash
 dcli-bootc overlay status          # what would be installed / removed
-dcli-bootc overlay sync            # apply it now, without rebuilding the image
+dcli-bootc overlay sync            # authoritative: install AND remove to match
 dcli-bootc overlay sync --dry-run  # show what would change
 ```
 
-`build` and `update` run the same sync after a successful image build, so a
-rebuild also brings the live overlay in line with the manifest.
+`dcli-bootc overlay import` still exists for an explicit one-off snapshot, but
+the automatic snapshot makes it unnecessary before `build`/`update`. Pass
+`--no-import` to `build`/`update` to opt out (for example to keep the module
+strictly hand-edited).
+
+`build` and `update` run the same additive reconcile after a successful image
+build, so a rebuild brings the live overlay in line with the module without
+ever discarding what you installed.
 
 `update` goes one step further and also **upgrades the packages already in the
 overlay** (the backend's own upgrade verb — `kinpkg upgrade` / `rum upgrade`),
-so a system update refreshes the overlay too, not just add/remove to match the
-manifest. `build` does not do this. It prompts before applying, and `--force`
+so a system update refreshes the overlay too, not just installs the packages
+the module declares. `build` does not do this. It prompts before applying, and `--force`
 skips the prompt:
 
 ```bash
@@ -524,11 +554,16 @@ write-temp-then-rename can replace its symlink with a real file; re-running
 ## Build
 
 ```bash
-dcli-bootc build             # Build and tag as latest
-dcli-bootc build --nvidia    # Use NVIDIA base image variant
+dcli-bootc build             # Build and tag as the profile's default_tag
+dcli-bootc build --nvidia    # NVIDIA base image variant, tagged :nvidia
 dcli-bootc build --no-cache  # Disable podman layer cache entirely
 dcli-bootc build --reboot    # Reboot after switching
+dcli-bootc build --no-switch # Build only; never switch the deployment (CI)
 ```
+
+NVIDIA builds default to the `nvidia` tag instead of `default_tag`, so the
+AMD/Intel and NVIDIA images coexist locally and can be pushed as separate
+registry tags; `--tag` overrides either.
 
 `build` automatically re-generates `Containerfile` and `build_files/build.sh`
 if they have drifted from your modules, so a build always reflects the current
@@ -593,7 +628,9 @@ dcli-bootc status            # Show tracked/booted/staged images and digests
 ```bash
 dcli-bootc update            # Pull latest base image, rebuild, and switch
 dcli-bootc update --nvidia   # Update using the NVIDIA base image variant
+                             # (stays on the :nvidia tag)
 dcli-bootc update --reboot   # Same, then reboot
+dcli-bootc update --no-switch # Pull + rebuild but leave the deployment (CI)
 ```
 
 `update` always pulls the latest base image, rebuilds on top of it, reconciles
