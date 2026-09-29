@@ -21,6 +21,7 @@ pub fn run(
     auto_reboot: bool,
     force: bool,
     no_cache: bool,
+    no_import: bool,
     skip_freshness_check: bool,
     upgrade_overlay: bool,
     host: Option<String>,
@@ -63,6 +64,7 @@ pub fn run(
             nvidia,
             auto_reboot,
             force,
+            no_import,
             active_host.clone(),
         )?
     {
@@ -139,15 +141,16 @@ pub fn run(
         }
     }
 
-    // ── Offer to snapshot live overlay installs before sync removes the ones
-    // the manifest doesn't declare. A package installed with dnf/kinpkg since
-    // the last import would otherwise be deleted before the user can import it.
-    if !force {
-        match crate::commands::overlay::pending_removals(project_dir, &profile) {
+    // ── When automatic snapshotting is off, tell the user which live overlay
+    // packages the manifest does not declare. Nothing removes them (the sync
+    // below is additive), so this is informational: run `overlay import` to
+    // record them.
+    if no_import && !force {
+        match crate::commands::overlay::undeclared_live_packages(project_dir, &profile) {
             Ok(pending) if !pending.is_empty() => {
                 println!();
                 println!(
-                    "{} The live overlay has {} package(s) not declared in '{}'; sync would remove them:",
+                    "{} The live overlay has {} package(s) not declared in '{}' — kept (sync is additive). Run 'dcli-bootc overlay import' to record them:",
                     "!".yellow(),
                     pending.len(),
                     profile.overlay_module.as_deref().unwrap_or("?"),
@@ -155,27 +158,42 @@ pub fn run(
                 for p in &pending {
                     println!("    {} {}", "+".green(), p);
                 }
-                if bootc::confirm("Import them into the overlay module before syncing?") {
-                    if let Err(e) = crate::commands::overlay::import(
-                        project_dir,
-                        false,
-                        true,
-                        active_host.as_deref(),
-                    ) {
-                        eprintln!("{} Overlay import failed: {:#}", "!".yellow(), e);
-                    }
-                }
             }
             Ok(_) => {}
             Err(e) => eprintln!("{} Could not check overlay drift: {:#}", "!".yellow(), e),
         }
     }
 
-    // ── Reconcile the host usr-overlay with the modules: packages deleted
-    // from a module are uninstalled from the host overlay. No-op on hosts
-    // without a usable overlay backend or projects without overlay_module.
-    if let Err(e) = crate::commands::overlay::sync(project_dir, &profile, force, false, false) {
+    // ── Reconcile the host usr-overlay with the modules: declared packages
+    // missing from the live overlay are installed. No-op on hosts without a
+    // usable overlay backend or projects without overlay_module.
+    //
+    // Additive (`remove_extra = false`): build/update install declared
+    // packages but never remove live ones the manifest does not declare, so an
+    // overlay package installed with dnf/kinpkg since the last import is not
+    // silently deleted. Only an explicit `overlay sync` is authoritative.
+    if let Err(e) = crate::commands::overlay::sync(project_dir, &profile, force, false, false, false) {
         eprintln!("{} Overlay sync failed: {:#}", "!".yellow(), e);
+    }
+
+    // ── Snapshot the live overlay into the manifest so a package installed
+    // with dnf/kinpkg is recorded without a manual `overlay import`. Runs after
+    // the additive sync above, so a package declared in the manifest but not
+    // yet installed is included. `--no-import` opts out. No-op on hosts
+    // without a usable overlay backend or projects without overlay_module.
+    if !no_import
+        && profile.overlay_module.is_some()
+        && crate::overlay::select(profile.overlay_backend).is_some()
+    {
+        if let Err(e) = crate::commands::overlay::import(
+            project_dir,
+            false,
+            true,
+            true,
+            active_host.as_deref(),
+        ) {
+            eprintln!("{} Overlay snapshot failed: {:#}", "!".yellow(), e);
+        }
     }
 
     // ── On `update`, also refresh the packages already installed in the
@@ -230,6 +248,7 @@ fn handoff_to_update_if_stale(
     nvidia: bool,
     auto_reboot: bool,
     force: bool,
+    no_import: bool,
     host: Option<String>,
 ) -> Result<bool> {
     match registry::check_base_freshness(base_image) {
@@ -266,6 +285,7 @@ fn handoff_to_update_if_stale(
                     auto_reboot,
                     nvidia,
                     false,
+                    no_import,
                     host,
                 )?;
                 return Ok(true);

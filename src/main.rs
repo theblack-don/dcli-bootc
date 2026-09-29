@@ -74,6 +74,10 @@ enum Commands {
         /// Disable podman layer caching for this build
         #[arg(long)]
         no_cache: bool,
+
+        /// Do not snapshot the live overlay into the overlay module
+        #[arg(long)]
+        no_import: bool,
     },
 
     /// Switch the bootc deployment to the locally built image
@@ -122,6 +126,10 @@ enum Commands {
         /// Use podman layer cache (default: disabled — update always rebuilds fresh)
         #[arg(long)]
         cache: bool,
+
+        /// Do not snapshot the live overlay into the overlay module
+        #[arg(long)]
+        no_import: bool,
     },
 
     /// Show bootc deployment status and project info
@@ -246,6 +254,7 @@ fn main() -> Result<()> {
                     reboot,
                     force,
                     no_cache,
+                    no_import,
                 } => {
                     commands::build::run(
                         &project_path,
@@ -254,6 +263,7 @@ fn main() -> Result<()> {
                         reboot,
                         force,
                         no_cache,
+                        no_import,
                         false,
                         false,
                         cli.host,
@@ -272,8 +282,18 @@ fn main() -> Result<()> {
                     force,
                     reboot,
                     cache,
+                    no_import,
                 } => {
-                    commands::update::run(&project_path, tag, force, reboot, nvidia, cache, cli.host)?;
+                    commands::update::run(
+                        &project_path,
+                        tag,
+                        force,
+                        reboot,
+                        nvidia,
+                        cache,
+                        no_import,
+                        cli.host,
+                    )?;
                 }
                 Commands::Status => {
                     commands::status::run(&project_path, cli.host)?;
@@ -287,6 +307,7 @@ fn main() -> Result<()> {
                             &project_path,
                             dry_run,
                             force,
+                            false,
                             cli.host.as_deref(),
                         )?;
                     }

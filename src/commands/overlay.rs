@@ -166,6 +166,7 @@ pub fn import(
     project_dir: &Path,
     dry_run: bool,
     force: bool,
+    quiet: bool,
     host: Option<&str>,
 ) -> Result<()> {
     let (profile, _) = config::resolve_effective_profile(project_dir, host)?;
@@ -184,24 +185,28 @@ pub fn import(
     let path = config::module_path(project_dir, module_name)
         .unwrap_or_else(|| project_dir.join("modules").join(format!("{}.yaml", module_name)));
 
-    println!(
-        "{} Importing {} overlay package(s) into {}",
-        "▶".cyan(),
-        installed.len(),
-        path.display()
-    );
-
-    if !skipped.is_empty() {
+    if !quiet {
         println!(
-            "  {} Skipping {} package(s) the image removes: {}",
-            "!".yellow(),
-            skipped.len(),
-            skipped.join(", ")
+            "{} Importing {} overlay package(s) into {}",
+            "▶".cyan(),
+            installed.len(),
+            path.display()
         );
+
+        if !skipped.is_empty() {
+            println!(
+                "  {} Skipping {} package(s) the image removes: {}",
+                "!".yellow(),
+                skipped.len(),
+                skipped.join(", ")
+            );
+        }
     }
 
     if installed.is_empty() {
-        println!("  {}", "Overlay has no packages — nothing to write.".dimmed());
+        if !quiet {
+            println!("  {}", "Overlay has no packages — nothing to write.".dimmed());
+        }
         return Ok(());
     }
 
@@ -213,35 +218,47 @@ pub fn import(
         return Ok(());
     }
 
+    // Idempotence: skip rewriting when the module already lists exactly these
+    // packages, so an automatic snapshot never reformats the file (or creates
+    // noisy diffs) when nothing changed.
+    if manifest_packages(project_dir, &profile).unwrap_or_default() == installed {
+        if !quiet {
+            println!("{} Overlay module already matches the live overlay.", "✓".green());
+        }
+        return Ok(());
+    }
+
     write_module(&path, &installed, force, backend)?;
 
-    println!("{} Wrote {} package(s)", "✓".green(), installed.len());
-    if profile.enabled_modules.iter().any(|m| m == module_name) {
+    if !quiet {
+        println!("{} Wrote {} package(s)", "✓".green(), installed.len());
+        if profile.enabled_modules.iter().any(|m| m == module_name) {
+            println!(
+                "  {} module '{}' is in enabled_modules — its packages will ALSO be baked into the image. Remove it from enabled_modules to keep them overlay-only.",
+                "!".yellow(),
+                module_name
+            );
+        }
+        let local = backend.installed_local_rpms();
+        if !local.is_empty() {
+            println!(
+                "  {} Locally-installed overlay RPMs are not imported (no repo provides them) — declare them as local_rpms/remote_rpms: {}",
+                "!".yellow(),
+                local.join(", ")
+            );
+        }
         println!(
-            "  {} module '{}' is in enabled_modules — its packages will ALSO be baked into the image. Remove it from enabled_modules to keep them overlay-only.",
-            "!".yellow(),
-            module_name
+            "  Next: run 'dcli-bootc overlay sync' (or build/update) to install/remove overlay packages with {}.",
+            backend.tool()
         );
     }
-    let local = backend.installed_local_rpms();
-    if !local.is_empty() {
-        println!(
-            "  {} Locally-installed overlay RPMs are not imported (no repo provides them) — declare them as local_rpms/remote_rpms: {}",
-            "!".yellow(),
-            local.join(", ")
-        );
-    }
-    println!(
-        "  Next: run 'dcli-bootc overlay sync' (or build/update) to install/remove overlay packages with {}.",
-        backend.tool()
-    );
     Ok(())
 }
 
-/// Live overlay packages that are not declared in the overlay module and that
-/// the base image does not provide — exactly the packages `sync` would remove.
-/// Used by build/update to offer an import before those packages are deleted.
-pub fn pending_removals(project_dir: &Path, profile: &Profile) -> Result<Vec<String>> {
+/// Live overlay packages that the manifest does not declare and that the base
+/// image does not provide — the set an additive sync keeps in place. Used by
+/// build/update (`--no-import`) to tell the user what is not recorded yet.
+pub fn undeclared_live_packages(project_dir: &Path, profile: &Profile) -> Result<Vec<String>> {
     if profile.overlay_module.is_none() {
         return Ok(Vec::new());
     }
@@ -495,12 +512,20 @@ pub fn status(project_dir: &Path, host: Option<&str>) -> Result<()> {
 /// provides are **kept** instead (see `base_provided_packages`). Used by
 /// build/update and `overlay sync`. Returns the number of packages actually
 /// changed.
+///
+/// `remove_extra` controls whether live packages the manifest does not declare
+/// are removed. build/update pass `false`, making the manifest a floor: new
+/// packages are installed, but anything the user installed live is left alone
+/// (so a plain `dnf`/`kinpkg install` is never silently undone). Only an
+/// explicit `overlay sync` passes `true` and treats the manifest as
+/// authoritative.
 pub fn sync(
     project_dir: &Path,
     profile: &Profile,
     force: bool,
     dry_run: bool,
     announce: bool,
+    remove_extra: bool,
 ) -> Result<usize> {
     if profile.overlay_module.is_none() {
         return Ok(0);
@@ -538,15 +563,28 @@ pub fn sync(
     let installed = backend.installed_packages()?;
     // An empty manifest must never imply removals; only a non-empty manifest
     // describes the intended overlay package set.
-    let (to_install, mut to_remove) = if manifest.is_empty() {
+    let (to_install, undeclared) = if manifest.is_empty() {
         (Vec::new(), Vec::new())
     } else {
         diff(&installed, &manifest)
+    };
+    // Additive callers (build/update) keep undeclared live packages; only an
+    // authoritative `overlay sync` removes them.
+    let mut to_remove: Vec<String> = if remove_extra {
+        undeclared.clone()
+    } else {
+        Vec::new()
     };
     let retained = take_retained(
         &mut to_remove,
         &base_provided_packages(project_dir, profile, backend),
     );
+    // Undeclared live packages deliberately left in place by an additive sync.
+    let kept: Vec<&String> = if remove_extra {
+        Vec::new()
+    } else {
+        undeclared.iter().collect()
+    };
 
     // Declared local RPMs that need installing, and installed ones whose staged
     // copy is missing/blank (so a later overlay reset can still reinstall them).
@@ -570,7 +608,16 @@ pub fn sync(
         && local_to_stage.is_empty()
     {
         if announce {
-            if retained.is_empty() {
+            if !kept.is_empty() {
+                println!(
+                    "{} Overlay matches the manifest; {} live package(s) not declared were kept:",
+                    "✓".green(),
+                    kept.len()
+                );
+                for p in &kept {
+                    println!("    {} {}", "=".cyan(), p);
+                }
+            } else if retained.is_empty() {
                 println!("{} Overlay matches the manifest.", "✓".green());
             } else {
                 println!(
@@ -610,6 +657,19 @@ pub fn sync(
             "=".cyan(),
             p
         );
+    }
+    if !kept.is_empty() {
+        if announce {
+            for p in &kept {
+                println!("    {} keep    {} (not declared)", "=".cyan(), p);
+            }
+        } else {
+            println!(
+                "    {} keep    {} live package(s) not declared (additive sync)",
+                "=".cyan(),
+                kept.len()
+            );
+        }
     }
     for (path, name) in &local_to_install {
         println!(
@@ -654,6 +714,9 @@ pub fn sync(
     let mut extras = Vec::new();
     if !retained.is_empty() {
         extras.push(format!("{} base-provided kept", retained.len()));
+    }
+    if !kept.is_empty() {
+        extras.push(format!("{} kept (not declared)", kept.len()));
     }
     if !local_to_install.is_empty() {
         extras.push(format!("{} local RPM(s) installed", local_to_install.len()));
@@ -735,7 +798,7 @@ pub fn upgrade(profile: &Profile, force: bool, announce: bool) -> Result<usize> 
 pub fn sync_command(project_dir: &Path, force: bool, dry_run: bool, host: Option<&str>) -> Result<()> {
     let (profile, _) = config::resolve_effective_profile(project_dir, host)?;
     require_overlay(&profile)?;
-    sync(project_dir, &profile, force, dry_run, true)?;
+    sync(project_dir, &profile, force, dry_run, true, true)?;
     Ok(())
 }
 
