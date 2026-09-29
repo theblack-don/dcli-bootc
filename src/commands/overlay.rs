@@ -692,7 +692,14 @@ pub fn sync(
         return Ok(0);
     }
 
-    if !force
+    // Only a change to the installed package set needs confirmation. Restaging
+    // a stale local-RPM copy is idempotent maintenance that leaves the live set
+    // alone, so a restage-only sync runs without prompting (the repeated ask
+    // after every build came from a permission bug, see `staged_needs_repair`).
+    let changes_packages =
+        !to_install.is_empty() || !to_remove.is_empty() || !local_to_install.is_empty();
+    if changes_packages
+        && !force
         && !crate::bootc::confirm(&format!(
             "Apply these changes to the live usr-overlay with {}?",
             backend.tool()
@@ -924,10 +931,15 @@ fn staged_needs_repair(backend: &dyn OverlayBackend, src: &Path, name: &str) -> 
     let Some(staged) = backend.staged_local_rpm(name) else {
         return false;
     };
-    match (std::fs::metadata(src), std::fs::metadata(&staged)) {
-        (Ok(s), Ok(d)) => d.len() == 0 || d.len() != s.len(),
-        (_, Err(_)) => true,
-        (Err(_), _) => false,
+    let Ok(src) = std::fs::metadata(src) else {
+        return false;
+    };
+    // The overlay state directory is 0700 root, so a plain stat of the staged
+    // copy always fails for a normal user — read its size through `sudo`, or
+    // every sync thinks the copy is missing and re-stages it.
+    match overlay::sudo_file_len(&staged) {
+        Some(len) => len == 0 || len != src.len(),
+        None => true,
     }
 }
 
@@ -1049,7 +1061,11 @@ pub fn clean(
     }
     for name in &declared_local {
         let stored = backend.staged_local_rpm(name);
-        let missing = stored.as_ref().map_or(true, |p| !p.exists());
+        // 0700 root state dir: `Path::exists()` is false for a normal user even
+        // when the copy is there, so check through `sudo` like the sync does.
+        let missing = stored
+            .as_ref()
+            .map_or(true, |p| overlay::sudo_file_len(p).is_none());
         if missing {
             println!(
                 "  {} No stored copy for local RPM '{}' — the reset cannot reinstall it.",

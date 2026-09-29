@@ -494,6 +494,25 @@ fn read_root_list(path: &str) -> Result<Vec<String>> {
     Ok(parse_list(&String::from_utf8_lossy(&out.stdout)))
 }
 
+/// Size of a root-owned file, read through `sudo` (the overlay state
+/// directories are 0700 root, so a plain stat fails for a normal user).
+/// `None` when the file is missing or unreadable.
+pub(crate) fn sudo_file_len(path: &Path) -> Option<u64> {
+    let out = Command::new("sudo")
+        .arg("stat")
+        .arg("-c")
+        .arg("%s")
+        .arg("--")
+        .arg(path)
+        .stdin(Stdio::inherit())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
 /// Run `sudo <args>` and report whether it succeeded (output discarded).
 fn sudo_succeeds(args: &[&str]) -> Result<bool> {
     let status = Command::new("sudo")
