@@ -454,6 +454,12 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
             "rpm -qa --qf '%{{NAME}}\\n' | sort -u > {}",
             crate::overlay::BAKED_BASE_LIST
         ));
+        // Capability names, so a base dependency satisfied by a renamed drop-in
+        // (e.g. terra-ddcutil providing ddcutil) is still seen as base-provided.
+        lines.push(format!(
+            "rpm -qa --qf '[%{{PROVIDENAME}}\\n]' | sort -u > {}",
+            crate::overlay::BAKED_BASE_PROVIDES
+        ));
     }
 
     // ── Project snapshot (`include_project`) ──
@@ -801,6 +807,14 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("rpm -qa --qf '%{NAME}\\n'"), "{out}");
+        assert!(
+            out.contains("> /usr/share/dcli-bootc/base-provides.list"),
+            "{out}"
+        );
+        assert!(
+            out.contains("rpm -qa --qf '[%{PROVIDENAME}\\n]'"),
+            "{out}"
+        );
     }
 
     #[test]

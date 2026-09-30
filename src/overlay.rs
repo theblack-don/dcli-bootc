@@ -12,9 +12,10 @@
 //! * `kinpkg` — kineticos. A persistent overlayfs on `/usr` (shipped by the
 //!   project's `overlay` module) with `kinpkg` as the installer. There is a
 //!   single merged rpmdb, so the overlay's packages are derived from the
-//!   manually-installed (`--userinstalled`) set minus a base-package list
-//!   baked into the image at build time (see `BAKED_BASE_LIST`). This catches
-//!   plain `dnf install` too, which also lands in the overlay. kinpkg's own
+//!   manually-installed (`--userinstalled`) set minus the base-package and
+//!   base-provides lists baked into the image at build time (see
+//!   `BAKED_BASE_LIST` / `BAKED_BASE_PROVIDES`). This catches plain `dnf
+//!   install` too, which also lands in the overlay. kinpkg's own
 //!   `/var/lib/kineticos/overlay/installed.txt` record is the fallback.
 //!
 //! Packages the base image provides are kept rather than removed — erasing one
@@ -31,6 +32,12 @@ use crate::config::OverlayBackend as BackendPref;
 /// Path of the base-image package list the generator bakes into the image for
 /// backends whose overlay shares the base rpmdb (kinpkg).
 pub const BAKED_BASE_LIST: &str = "/usr/share/dcli-bootc/base-packages.list";
+
+/// Path of the base-image capability list the generator bakes into the image
+/// for backends whose overlay shares the base rpmdb (kinpkg). Records every
+/// `Provides:` name so a dependency satisfied by a renamed drop-in (e.g.
+/// `terra-ddcutil` providing `ddcutil`) still counts as base-provided.
+pub const BAKED_BASE_PROVIDES: &str = "/usr/share/dcli-bootc/base-provides.list";
 
 /// A usr-overlay implementation dcli-bootc can reconcile against.
 pub trait OverlayBackend {
@@ -364,9 +371,18 @@ impl OverlayBackend for KinpkgBackend {
 
     fn base_packages(&self) -> Option<HashSet<String>> {
         // KineticOS keeps one merged rpmdb inside the overlay, so the base set
-        // is read from the list the generator baked into the image.
+        // is read from the lists the generator baked into the image. Include
+        // provided capability names so a dependency the base image satisfies
+        // with a differently-named package (e.g. Terra's `terra-ddcutil`
+        // providing `ddcutil`) is not mistaken for an overlay install. The
+        // provides file is absent on images built before it was baked; fall
+        // back to names alone.
         let raw = std::fs::read_to_string(BAKED_BASE_LIST).ok()?;
-        Some(parse_list(&raw).into_iter().collect())
+        let mut base: HashSet<String> = parse_list(&raw).into_iter().collect();
+        if let Ok(provides) = std::fs::read_to_string(BAKED_BASE_PROVIDES) {
+            base.extend(parse_list(&provides));
+        }
+        Some(base)
     }
 
     fn has_package(&self, name: &str) -> bool {
