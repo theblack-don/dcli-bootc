@@ -1,5 +1,5 @@
 Name:           dcli-bootc
-Version:        0.5.0
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Declarative bootc image configuration manager
 
