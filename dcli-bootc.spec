@@ -39,6 +39,9 @@ ln -s %{name} %{buildroot}%{_bindir}/dcli
 %{_bindir}/dcli
 
 %changelog
+* Wed Sep 30 2026 Black Don <theblackdonatello@gmail.com> - 0.6.0-1
+- Version bump to 0.6.0
+
 * Mon Sep 28 2026 Black Don <theblackdonatello@gmail.com> - 0.5.0-1
 - Version bump to 0.5.0
 
