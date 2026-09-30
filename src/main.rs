@@ -177,6 +177,17 @@ enum Commands {
         #[command(subcommand)]
         action: FlatpakAction,
     },
+
+    /// Generate shell completion scripts (bash, fish, zsh)
+    Completions {
+        /// Shell to emit completions for
+        #[arg(value_enum)]
+        shell: clap_complete::Shell,
+
+        /// Binary name to generate for
+        #[arg(long, default_value = "dcli-bootc")]
+        bin: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -277,10 +288,15 @@ fn main() -> Result<()> {
         Commands::Rollback { force, reboot } => {
             commands::rollback::run(force, reboot)?;
         }
+        Commands::Completions { shell, bin } => {
+            commands::completions::run(<Cli as clap::CommandFactory>::command(), shell, &bin)?;
+        }
         _ => {
             let project_path = project::resolve_project(cli.project)?;
             match cli.command {
-                Commands::Init { .. } | Commands::Rollback { .. } => unreachable!(),
+                Commands::Init { .. }
+                | Commands::Rollback { .. }
+                | Commands::Completions { .. } => unreachable!(),
                 Commands::Gen { dry_run } => {
                     commands::gen::run(&project_path, dry_run, cli.host)?;
                 }

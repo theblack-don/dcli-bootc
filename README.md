@@ -91,9 +91,28 @@ sudo dnf install dcli-bootc    # gone after the next reboot
 | `status`| Show bootc deployment status and project info |
 | `overlay` | Import / sync / upgrade the host usr-overlay with a module (RakuOS `rum` or kineticos `kinpkg`) |
 | `dotfiles` | Apply profile dotfiles into ~ as symlinks (also runs on build/update) |
+| `completions` | Generate shell completion scripts (bash, fish, zsh) |
 
 Every command is also available through the short `dcli` alias (`dcli update`,
 `dcli overlay status`, ...).
+
+### Shell completions
+
+Installing the RPM sets up tab-completion for **bash**, **fish**, and **zsh**
+automatically, for both `dcli-bootc` and the `dcli` alias. For a source/dev build
+you can generate the scripts yourself:
+
+```bash
+# bash
+dcli-bootc completions bash > ~/.local/share/bash-completion/completions/dcli-bootc
+# fish
+dcli-bootc completions fish > ~/.config/fish/completions/dcli-bootc.fish
+# zsh
+dcli-bootc completions zsh  > ~/.local/share/zsh/site-functions/_dcli-bootc
+```
+
+Add `--bin dcli` to generate completions for the short alias instead.
+`./build-dev.sh` installs user-level completions for you.
 
 ## Quickstart
 

@@ -32,11 +32,27 @@ install -Dm0755 target/release/%{name} %{buildroot}%{_bindir}/%{name}
 # Short alias so users can type `dcli build`, `dcli update`, ...
 ln -s %{name} %{buildroot}%{_bindir}/dcli
 
+# Shell completions, generated for both the full name and the short alias.
+install -d %{buildroot}%{_datadir}/bash-completion/completions
+install -d %{buildroot}%{_datadir}/fish/vendor_completions.d
+install -d %{buildroot}%{_datadir}/zsh/site-functions
+for bin in %{name} dcli; do
+  target/release/%{name} completions bash --bin "$bin" > %{buildroot}%{_datadir}/bash-completion/completions/"$bin"
+  target/release/%{name} completions fish --bin "$bin" > %{buildroot}%{_datadir}/fish/vendor_completions.d/"$bin".fish
+  target/release/%{name} completions zsh  --bin "$bin" > %{buildroot}%{_datadir}/zsh/site-functions/_"$bin"
+done
+
 %files
 %license LICENSE
 %doc README.md
 %{_bindir}/%{name}
 %{_bindir}/dcli
+%{_datadir}/bash-completion/completions/%{name}
+%{_datadir}/bash-completion/completions/dcli
+%{_datadir}/fish/vendor_completions.d/%{name}.fish
+%{_datadir}/fish/vendor_completions.d/dcli.fish
+%{_datadir}/zsh/site-functions/_%{name}
+%{_datadir}/zsh/site-functions/_dcli
 
 %changelog
 * Wed Sep 30 2026 Black Don <theblackdonatello@gmail.com> - 0.6.0-1

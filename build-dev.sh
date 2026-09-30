@@ -19,6 +19,28 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
+# Generate shell completions into user-level dirs (no sudo needed).
+# The RPM installs system-wide completions; this covers source/dev installs.
+install_completions() {
+  local bin="$1"
+  local xdg_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+  local xdg_config="${XDG_CONFIG_HOME:-$HOME/.config}"
+
+  mkdir -p "$xdg_data/bash-completion/completions"
+  "$bin" completions bash --bin dcli-bootc > "$xdg_data/bash-completion/completions/dcli-bootc"
+  "$bin" completions bash --bin dcli      > "$xdg_data/bash-completion/completions/dcli"
+
+  if [[ -d "$xdg_config/fish" ]]; then
+    mkdir -p "$xdg_config/fish/completions"
+    "$bin" completions fish --bin dcli-bootc > "$xdg_config/fish/completions/dcli-bootc.fish"
+    "$bin" completions fish --bin dcli       > "$xdg_config/fish/completions/dcli.fish"
+  fi
+
+  mkdir -p "$xdg_data/zsh/site-functions"
+  "$bin" completions zsh --bin dcli-bootc > "$xdg_data/zsh/site-functions/_dcli-bootc"
+  "$bin" completions zsh --bin dcli       > "$xdg_data/zsh/site-functions/_dcli"
+}
+
 echo -e "${CYAN}━━━ dcli-bootc Dev Build (RPM pipeline, same as COPR) ━━━${NC}"
 
 # Ensure distrobox is installed
@@ -87,6 +109,8 @@ if [[ "${ans,,}" == "y" || "${ans,,}" == "yes" ]]; then
   fi
   echo -e "${GREEN}✓ Installed:${NC} $(command -v dcli-bootc || echo "${INSTALL_DIR}/dcli-bootc")"
   echo -e "  Alias:    ${CYAN}dcli${NC} (→ dcli-bootc)"
+  install_completions "${INSTALL_DIR}/dcli-bootc"
+  echo -e "  Completions: ${CYAN}bash, fish, zsh${NC} (zsh may need fpath+=~/.local/share/zsh/site-functions)"
 else
   echo "  Install later with:"
   if [[ "$USE_SUDO" == "1" ]]; then
