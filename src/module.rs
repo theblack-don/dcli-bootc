@@ -53,11 +53,18 @@ fn resolve_with_deps(
 }
 
 /// Flatpak remotes declared across all modules (deduped by name, order
-/// preserved). When none are declared, flathub is used as the default.
+/// preserved). `flatpak_remotes:` and `user_flatpak_remotes:` are equivalent —
+/// both are applied to the invoking user's installation. When none are
+/// declared, flathub is used as the default.
 pub fn collect_flatpak_remotes(modules: &[ResolvedModule]) -> Vec<FlatpakRemote> {
     let mut remotes: Vec<FlatpakRemote> = Vec::new();
     for rm in modules {
-        for remote in &rm.module.flatpak_remotes {
+        let declared = rm
+            .module
+            .flatpak_remotes
+            .iter()
+            .chain(rm.module.user_flatpak_remotes.iter());
+        for remote in declared {
             if !remotes.iter().any(|r| r.name == remote.name) {
                 remotes.push(remote.clone());
             }

@@ -289,40 +289,48 @@ verification confirms each AppImage landed in `/usr/local/bin`. The
 
 ### Flatpaks
 
-Flatpaks are installed **system-wide into the image** at build time (like
-packages), so they ship with the image and survive rebases:
+Flatpaks are installed into the **invoking user's** flatpak installation
+(`flatpak --user`) when you run `dcli-bootc build`/`update`, and managed
+independently with `dcli-bootc flatpak sync` / `status`.
+
+They are deliberately **not** baked into the image. A system flatpak lives in
+`/var/lib/flatpak`, which under bootc is machine-local state: a
+`bootc switch`/`upgrade` keeps the running system's `/var` and only swaps
+`/usr`, so anything installed there at build time would not survive a rebase.
+Keeping flatpaks user-scoped puts them in `$HOME`, where they persist normally.
 
 ```yaml
 # modules/apps.yaml
-flatpaks:
+flatpaks:                 # alias: user_flatpaks
   - org.mozilla.firefox
   - com.obsproject.Studio
-remove_flatpaks:          # remove apps baked into the base image
+remove_flatpaks:          # alias: user_remove_flatpaks
   - org.fedoraproject.MediaWriter
 ```
 
+`flatpaks:`/`remove_flatpaks:` are aliases for `user_flatpaks:`/
+`user_remove_flatpaks:` and may be mixed freely; all four are merged and
+deduplicated across enabled modules.
+
 Installs come from the first configured remote — flathub by default, so no
 remote config is needed. To use another remote (or add flathub explicitly),
-declare remotes in any module; they are merged and deduplicated by name
-across all modules and added before any installs:
+declare remotes in any module; they are merged and deduplicated by name:
 
 ```yaml
-flatpak_remotes:
+flatpak_remotes:          # alias: user_flatpak_remotes
   - name: flathub
     url: https://dl.flathub.org/repo/flathub.flatpakrepo
   - name: fedora
     url: https://dl.fedoraproject.org/pub/fedora/linux/stable/41/x86_64/flatpak-apps/
 ```
 
-The generated `build.sh` runs `flatpak remote-add --if-not-exists --system`
-for each remote, then `flatpak install -y --or-update --system <remote>
-<app>` per module (deduplicated across modules; apps already baked into the
-base image are updated instead of failing) and
-`flatpak uninstall -y --system` for removals. The build plan lists them, and post-build verification boots
-the image and confirms each declared flatpak is present and each removal is
-gone — skipped with a warning when the base image has no `flatpak` binary.
-The base image must ship `flatpak` (bazzite and other desktop bases do);
-user-level flatpaks installed on the running system are not affected.
+The build plan lists the remotes, installs, and removals. The sync runs as the
+invoking user (never via sudo) and prompts before changing anything; pass
+`--force` to skip the prompt, or use `dcli-bootc flatpak sync --dry-run` to
+preview. `dcli-bootc flatpak status` shows drift between the declared set and
+your live user installation. The running system must have the `flatpak` binary
+(bazzite and other desktop bases ship it); when it is absent the sync is a
+no-op.
 
 ## Kernel management
 

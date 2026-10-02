@@ -9,7 +9,7 @@ use std::process::Command;
 
 use crate::bootc;
 use crate::config;
-use crate::module::{collect_flatpak_remotes, ResolvedModule};
+use crate::module::ResolvedModule;
 
 /// Print everything the build will do, then (best-effort) what changed
 /// relative to the previously built image.
@@ -35,22 +35,6 @@ pub fn print_build_plan(
 
     for rm in modules {
         print_module_plan(project_dir, rm);
-    }
-
-    if modules.iter().any(|rm| !rm.module.flatpaks.is_empty()) {
-        let remotes = collect_flatpak_remotes(modules);
-        println!(
-            "  {}",
-            format!(
-                "flatpak remotes: {}",
-                remotes
-                    .iter()
-                    .map(|r| r.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-            .dimmed()
-        );
     }
 
     println!();
@@ -174,35 +158,42 @@ fn print_module_plan(project_dir: &Path, rm: &ResolvedModule) {
     if !m.files.is_empty() {
         lines.push(format!("files overlay: {}", m.files.join(", ")));
     }
-    for remote in &m.flatpak_remotes {
-        lines.push(format!("flatpak remote: {} ({})", remote.name, remote.url));
-    }
-    if !m.flatpaks.is_empty() {
+    for remote in m.flatpak_remotes.iter().chain(m.user_flatpak_remotes.iter()) {
         lines.push(format!(
-            "flatpak install ({}): {}",
-            m.flatpaks.len(),
-            m.flatpaks.join(", ")
+            "user flatpak remote: {} ({})",
+            remote.name, remote.url
         ));
     }
-    if !m.remove_flatpaks.is_empty() {
-        lines.push(format!(
-            "flatpak remove ({}): {}",
-            m.remove_flatpaks.len(),
-            m.remove_flatpaks.join(", ")
-        ));
-    }
-    if !m.user_flatpaks.is_empty() {
+    let flatpak_installs: Vec<&String> = m
+        .flatpaks
+        .iter()
+        .chain(m.user_flatpaks.iter())
+        .collect();
+    if !flatpak_installs.is_empty() {
         lines.push(format!(
             "user flatpak install ({}): {} (host-side, flatpak --user)",
-            m.user_flatpaks.len(),
-            m.user_flatpaks.join(", ")
+            flatpak_installs.len(),
+            flatpak_installs
+                .iter()
+                .map(|a| a.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
-    if !m.user_remove_flatpaks.is_empty() {
+    let flatpak_removals: Vec<&String> = m
+        .remove_flatpaks
+        .iter()
+        .chain(m.user_remove_flatpaks.iter())
+        .collect();
+    if !flatpak_removals.is_empty() {
         lines.push(format!(
             "user flatpak remove ({}): {}",
-            m.user_remove_flatpaks.len(),
-            m.user_remove_flatpaks.join(", ")
+            flatpak_removals.len(),
+            flatpak_removals
+                .iter()
+                .map(|a| a.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
     }
     if m.scripts.pre.is_some() {

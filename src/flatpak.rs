@@ -1,13 +1,15 @@
 //! Live user-scoped Flatpak management.
 //!
-//! Flatpaks declared under `user_flatpaks:` are **not** baked into the image.
-//! They live in the invoking user's flatpak installation
-//! (`~/.local/share/flatpak`) and are reconciled on the running system — the
-//! flatpak analogue of the RakuOS usr-overlay sync. System-scoped flatpaks
-//! (`flatpaks:`) are still installed into the image at build time.
+//! Every flatpak a module declares — `flatpaks:`/`user_flatpaks:`,
+//! `remove_flatpaks:`/`user_remove_flatpaks:`, and
+//! `flatpak_remotes:`/`user_flatpak_remotes:` — is installed into the invoking
+//! user's flatpak installation (`~/.local/share/flatpak`) and reconciled on the
+//! running system. Flatpaks are **never** baked into the image: a system
+//! install (`/var/lib/flatpak`) lives in machine-local state under bootc and
+//! would not survive a rebase, so it is not supported.
 //!
-//! Unlike the image-side flatpaks, these run as the invoking user (no sudo) so
-//! `flatpak --user` targets the right home directory.
+//! These run as the invoking user (no sudo) so `flatpak --user` targets the
+//! right home directory.
 
 use anyhow::{Context, Result};
 use colored::*;
@@ -79,46 +81,51 @@ fn run(args: &[String]) -> Result<()> {
     Ok(())
 }
 
-/// Declared user flatpak app IDs across the given modules (deduped, sorted).
+/// Declared flatpak app IDs across the given modules (deduped, sorted).
+///
+/// `flatpaks:` and `user_flatpaks:` are equivalent — both are user-scoped.
 fn collect_apps(modules: &[ResolvedModule]) -> Vec<String> {
     let mut apps: Vec<String> = modules
         .iter()
-        .flat_map(|rm| rm.module.user_flatpaks.iter().cloned())
+        .flat_map(|rm| rm.module.flatpaks.iter().chain(rm.module.user_flatpaks.iter()))
+        .cloned()
         .collect();
     apps.sort();
     apps.dedup();
     apps
 }
 
-/// Declared user flatpak removals across the given modules (deduped, sorted).
+/// Declared flatpak removals across the given modules (deduped, sorted).
+///
+/// `remove_flatpaks:` and `user_remove_flatpaks:` are equivalent — both are
+/// user-scoped.
 fn collect_removals(modules: &[ResolvedModule]) -> Vec<String> {
     let mut apps: Vec<String> = modules
         .iter()
-        .flat_map(|rm| rm.module.user_remove_flatpaks.iter().cloned())
+        .flat_map(|rm| {
+            rm.module
+                .remove_flatpaks
+                .iter()
+                .chain(rm.module.user_remove_flatpaks.iter())
+        })
+        .cloned()
         .collect();
     apps.sort();
     apps.dedup();
     apps
 }
 
-/// Declared user flatpak remotes (deduped by name, order preserved).
+/// Declared flatpak remotes across the given modules (deduped by name, order
+/// preserved; `flatpak_remotes:` and `user_flatpak_remotes:` are equivalent).
 fn collect_remotes(modules: &[ResolvedModule]) -> Vec<FlatpakRemote> {
-    let mut remotes: Vec<FlatpakRemote> = Vec::new();
-    for rm in modules {
-        for remote in &rm.module.user_flatpak_remotes {
-            if !remotes.iter().any(|r| r.name == remote.name) {
-                remotes.push(remote.clone());
-            }
-        }
-    }
-    remotes
+    crate::module::collect_flatpak_remotes(modules)
 }
 
 fn modules(project_dir: &Path, profile: &Profile) -> Result<Vec<ResolvedModule>> {
     module::load_enabled_modules(project_dir, &profile.enabled_modules)
 }
 
-/// Reconcile the invoking user's flatpak installation with the `user_flatpaks:`
+/// Reconcile the invoking user's flatpak installation with the flatpaks
 /// declared across enabled modules. Returns the number of changes made.
 ///
 /// Declared apps are (re)applied with `flatpak install --or-update`, which

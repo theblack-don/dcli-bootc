@@ -1,9 +1,8 @@
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 use std::path::Path;
 
 use crate::config::{KernelConfig, OverlayBackend, PackageManager, Profile, RepoConfig};
-use crate::module::{collect_flatpak_remotes, load_enabled_modules, ResolvedModule};
+use crate::module::{load_enabled_modules, ResolvedModule};
 
 /// Package-manager-specific shell commands
 struct PkgManager {
@@ -193,27 +192,10 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
     }
     lines.push(String::new());
 
-    // ── Flatpak remotes (added once, before any module's installs) ──
-    let flatpak_remotes = collect_flatpak_remotes(modules);
-    if !flatpak_remotes.is_empty() {
-        lines.push("# === flatpak remotes ===".to_string());
-        for remote in &flatpak_remotes {
-            lines.push(format!(
-                "flatpak remote-add --if-not-exists --system {} \"{}\"",
-                remote.name, remote.url
-            ));
-        }
-    }
-
     // ── Kernel management (foundational: before any module section) ──
     if let Some(kernel) = &profile.kernel {
         emit_kernel_section(&mut lines, kernel, profile.package_manager);
     }
-
-    // Apps already emitted, so the same flatpak is not installed/removed
-    // twice across modules.
-    let mut installed_flatpaks: HashSet<String> = HashSet::new();
-    let mut removed_flatpaks: HashSet<String> = HashSet::new();
 
     for rm in modules {
         let m = &rm.module;
@@ -233,7 +215,6 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         let has_files = !m.files.is_empty();
         let has_scripts = m.scripts.pre.is_some() || m.scripts.post.is_some();
         let has_services = !m.services.is_empty() || !m.first_boot_services.is_empty();
-        let has_flatpaks = !m.flatpaks.is_empty() || !m.remove_flatpaks.is_empty();
 
         if !has_repos
             && !has_remove
@@ -241,7 +222,6 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
             && !has_files
             && !has_scripts
             && !has_services
-            && !has_flatpaks
         {
             continue;
         }
@@ -357,40 +337,6 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
             lines.push("}".to_string());
             lines.push("rm -rf \"$TMPDIR\"".to_string());
             lines.push("cd /".to_string());
-        }
-
-        // ── Flatpaks (system-wide into the image) ──
-        let apps: Vec<String> = m
-            .flatpaks
-            .iter()
-            .filter(|a| installed_flatpaks.insert(a.to_string()))
-            .cloned()
-            .collect();
-        if !apps.is_empty() {
-            // Installs come from the first configured remote (flathub by
-            // default); declare flatpak_remotes to use another one.
-            // --or-update: apps already in the base image update instead of erroring.
-            let remote = &flatpak_remotes[0].name;
-            lines.push(String::new());
-            lines.push(format!(
-                "flatpak install -y --or-update --system {} \\\n    {}",
-                remote,
-                apps.join(" \\\n    ")
-            ));
-        }
-
-        let removed: Vec<String> = m
-            .remove_flatpaks
-            .iter()
-            .filter(|a| removed_flatpaks.insert(a.to_string()))
-            .cloned()
-            .collect();
-        if !removed.is_empty() {
-            lines.push(String::new());
-            lines.push(format!(
-                "flatpak uninstall -y --system \\\n    {}",
-                removed.join(" \\\n    ")
-            ));
         }
 
         // ── Files overlay ──

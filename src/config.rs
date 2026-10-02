@@ -242,16 +242,19 @@ pub struct Module {
     #[serde(default)]
     pub appimages: Vec<String>,
 
-    /// Flatpak remotes to add before installing flatpaks (deduped by name;
-    /// flathub is auto-added when none are declared)
+    /// Flatpak remotes, applied with `flatpak remote-add --user` on the live
+    /// system (deduped by name; flathub is auto-added when none are declared).
+    /// Alias of `user_flatpak_remotes`.
     #[serde(default)]
     pub flatpak_remotes: Vec<FlatpakRemote>,
 
-    /// Flatpak apps to install system-wide into the image
+    /// Flatpak apps to install into the invoking user's flatpak installation.
+    /// Alias of `user_flatpaks`; flatpaks are never baked into the image.
     #[serde(default)]
     pub flatpaks: Vec<String>,
 
-    /// Flatpak apps to remove from the image
+    /// Flatpak apps to remove from the invoking user's flatpak installation.
+    /// Alias of `user_remove_flatpaks`.
     #[serde(default)]
     pub remove_flatpaks: Vec<String>,
 

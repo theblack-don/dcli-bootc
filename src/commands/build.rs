@@ -209,8 +209,8 @@ pub fn run(
     }
 
     // ── Reconcile the invoking user's flatpak installation with the modules'
-    // `user_flatpaks:` (host-side; user-scoped apps are never baked into the
-    // image). No-op when flatpak is absent or nothing is declared.
+    // flatpaks (host-side; flatpaks are never baked into the image).
+    // No-op when flatpak is absent or nothing is declared.
     if let Err(e) = crate::flatpak::sync(project_dir, &profile, force, false, false) {
         eprintln!("{} User flatpak sync failed: {:#}", "!".yellow(), e);
     }
@@ -355,14 +355,10 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
 
     let mut wanted: Vec<String> = Vec::new();
     let mut unwanted: Vec<String> = Vec::new();
-    let mut wanted_flatpaks: Vec<String> = Vec::new();
-    let mut unwanted_flatpaks: Vec<String> = Vec::new();
     let mut wanted_appimages: Vec<String> = Vec::new();
     for rm in &modules {
         wanted.extend(rm.module.packages.iter().cloned());
         unwanted.extend(rm.module.remove.iter().cloned());
-        wanted_flatpaks.extend(rm.module.flatpaks.iter().cloned());
-        unwanted_flatpaks.extend(rm.module.remove_flatpaks.iter().cloned());
         wanted_appimages.extend(rm.module.appimages.iter().cloned());
         for entry in &rm.module.local_rpms {
             match plan::local_rpm_package_name(project_dir, entry) {
@@ -379,12 +375,7 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
         wanted.extend(kernel.packages.iter().cloned());
         unwanted.extend(kernel.effective_remove());
     }
-    if wanted.is_empty()
-        && unwanted.is_empty()
-        && wanted_flatpaks.is_empty()
-        && unwanted_flatpaks.is_empty()
-        && wanted_appimages.is_empty()
-    {
+    if wanted.is_empty() && unwanted.is_empty() && wanted_appimages.is_empty() {
         return Ok(());
     }
 
@@ -519,52 +510,6 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
         }
     }
 
-    // ── Flatpak verification (best-effort: skipped when the image has no flatpak) ──
-    let mut wanted_flatpak_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    if !wanted_flatpaks.is_empty() || !unwanted_flatpaks.is_empty() {
-        let mut cmd = Command::new("sudo");
-        cmd.arg("podman")
-            .arg("run")
-            .arg("--rm")
-            .arg(image_ref)
-            .arg("flatpak")
-            .args(["list", "--system", "--app", "--columns=application"]);
-
-        let output = cmd.output();
-        match output {
-            Ok(output) if output.status.success() => {
-                let flatpak_installed: std::collections::HashSet<String> =
-                    String::from_utf8_lossy(&output.stdout)
-                        .lines()
-                        .map(|line| line.trim().to_string())
-                        .collect();
-
-                for app in wanted_flatpaks
-                    .iter()
-                    .filter(|a| wanted_flatpak_seen.insert(a.to_string()))
-                {
-                    if !flatpak_installed.contains(app) {
-                        problems.push(format!("flatpak missing from image: {}", app));
-                    }
-                }
-                for app in &unwanted_flatpaks {
-                    if flatpak_installed.contains(app) {
-                        problems.push(format!("flatpak should have been removed: {}", app));
-                    }
-                }
-            }
-            Ok(_) => println!(
-                "  {} Could not verify flatpaks (flatpak not available in this image) — skipping check",
-                "!".yellow()
-            ),
-            Err(e) => println!(
-                "  {} Could not verify flatpaks: {} — skipping check",
-                "!".yellow(),
-                e
-            ),
-        }
-    }
-
     // ── AppImage verification ──
     if !wanted_appimages.is_empty() {
         let mut cmd = Command::new("sudo");
@@ -615,16 +560,8 @@ fn verify_packages(project_dir: &Path, profile: &config::Profile, image_ref: &st
             "✓".green(),
             wanted.len(),
             unwanted.len(),
-            if !wanted_flatpaks.is_empty()
-                || !unwanted_flatpaks.is_empty()
-                || !wanted_appimages.is_empty()
-            {
-                format!(
-                    ", {} flatpak(s) present, {} flatpak removal(s) confirmed, {} appimage(s) installed",
-                    wanted_flatpaks.len(),
-                    unwanted_flatpaks.len(),
-                    wanted_appimages.len()
-                )
+            if !wanted_appimages.is_empty() {
+                format!(", {} appimage(s) installed", wanted_appimages.len())
             } else {
                 String::new()
             }
