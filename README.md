@@ -133,7 +133,9 @@ On **kineticos**, bare `init` asks how you want to use the image:
   `base_image` is the kineticos image the system tracks, so kineticos keeps
   managing the base and its updates flow through automatically. The full
   upstream recipe is readable at `/usr/share/kineticos/project/`; you don't edit
-  it.
+  it. The project gets its own `modules/overlay-packages.yaml` (seeded from the
+  live usr-overlay, empty if there is nothing installed yet), so your overlay
+  packages carry over and stay editable.
 * **Fork** — copy the complete kineticos project for full control. `base_image`
   stays the template's base (Bazzite), so you take over upstream updates.
 

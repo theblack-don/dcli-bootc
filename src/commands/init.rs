@@ -287,15 +287,23 @@ fn scaffold_from_image(project_dir: &Path, name: Option<&str>, force: bool) -> R
 /// A missing backend (e.g. the project was copied on another machine) only
 /// prints a note; it can be seeded later with `dcli-bootc overlay import`.
 fn seed_overlay_module(project_dir: &Path) {
-    let configured = crate::config::load_profile(project_dir)
-        .map(|p| p.overlay_module.is_some())
-        .unwrap_or(false);
-    if !configured {
-        return;
-    }
+    let profile = match crate::config::load_profile(project_dir) {
+        Ok(p) if p.overlay_module.is_some() => p,
+        _ => return,
+    };
     if let Err(e) = crate::commands::overlay::import(project_dir, false, true, true, None) {
         println!(
             "  {} Could not record the live overlay in the project: {:#}",
+            "!".yellow(),
+            e
+        );
+    }
+    // The profile references the overlay module even when the live overlay is
+    // empty, so create it (empty) if `import` did not. Otherwise the extended
+    // project has no place to declare overlay packages.
+    if let Err(e) = crate::commands::overlay::ensure_manifest_module(project_dir, &profile) {
+        println!(
+            "  {} Could not create the overlay manifest module: {:#}",
             "!".yellow(),
             e
         );

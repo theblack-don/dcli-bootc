@@ -255,6 +255,41 @@ pub fn import(
     Ok(())
 }
 
+/// Ensure the project's overlay-manifest module exists, creating an empty,
+/// editable one when the live overlay has nothing to import yet. This is what
+/// exposes the manifest to an extended/forked project: the profile points at
+/// `overlay_module:` even before the first `overlay import`, so the file has to
+/// exist for the user to declare packages in it.
+///
+/// An existing `.yaml`/`.yml` (for example one copied from a template) is left
+/// untouched.
+pub fn ensure_manifest_module(project_dir: &Path, profile: &Profile) -> Result<()> {
+    let Some(module_name) = profile.overlay_module.as_deref() else {
+        return Ok(());
+    };
+    if config::module_path(project_dir, module_name).is_some() {
+        return Ok(());
+    }
+
+    let path = project_dir
+        .join("modules")
+        .join(format!("{}.yaml", module_name));
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create {}", parent.display()))?;
+    }
+    let body = format!(
+        "{IMPORT_MARKER}\n\
+         # Packages here are installed into the live usr-overlay, not baked into\n\
+         # the image. Add package names below, or run 'dcli-bootc overlay import'\n\
+         # to snapshot what is installed live, then 'dcli-bootc overlay sync'.\n\
+         description: usr-overlay packages\n\
+         packages: []\n"
+    );
+    std::fs::write(&path, body).with_context(|| format!("Failed to write {}", path.display()))?;
+    Ok(())
+}
+
 /// Live overlay packages that the manifest does not declare and that the base
 /// image does not provide — the set an additive sync keeps in place. Used by
 /// build/update (`--no-import`) to tell the user what is not recorded yet.
@@ -1147,6 +1182,7 @@ mod tests {
             dotfiles: Vec::new(),
             overlay_module: module.map(str::to_string),
             overlay_backend: config::OverlayBackend::default(),
+            include_project: false,
             kernel: None,
         }
     }
@@ -1181,6 +1217,35 @@ mod tests {
         let retained = take_retained(&mut to_remove, &base);
         assert_eq!(to_remove, ["bar"]);
         assert_eq!(retained, ["foo"]);
+    }
+
+    #[test]
+    fn ensure_manifest_module_creates_empty_editable_module() {
+        let dir =
+            std::env::temp_dir().join(format!("dcli-overlay-ensure-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        ensure_manifest_module(&dir, &profile_with_overlay(Some("overlay-packages"))).unwrap();
+        let path = dir.join("modules").join("overlay-packages.yaml");
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains("packages: []"), "{body}");
+
+        // Existing files (e.g. a template's manifest) are left untouched.
+        std::fs::write(&path, "description: keep\npackages:\n  - steam\n").unwrap();
+        ensure_manifest_module(&dir, &profile_with_overlay(Some("overlay-packages"))).unwrap();
+        assert!(std::fs::read_to_string(&path).unwrap().contains("steam"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn ensure_manifest_module_is_a_noop_without_overlay_module() {
+        let dir = std::env::temp_dir().join(format!(
+            "dcli-overlay-ensure-none-test-{}",
+            std::process::id()
+        ));
+        ensure_manifest_module(&dir, &profile_with_overlay(None)).unwrap();
+        assert!(!dir.join("modules").exists());
     }
 
     #[test]

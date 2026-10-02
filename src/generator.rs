@@ -790,6 +790,7 @@ mod tests {
             dotfiles: vec![],
             overlay_module: overlay_module.map(str::to_string),
             overlay_backend: backend,
+            include_project: false,
             kernel: None,
         }
     }
