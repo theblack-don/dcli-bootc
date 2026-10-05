@@ -197,6 +197,26 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
         emit_kernel_section(&mut lines, kernel, profile.package_manager);
     }
 
+    // On atomic/bootc bases /opt -> /var/opt and /usr/local -> /var/usrlocal.
+    // /var is machine-local and is not part of the deployed image, so an RPM or
+    // AppImage installing through those symlinks would vanish on the running
+    // system (leaving dangling launchers). Stage the payload under /var now and
+    // promote it into a real image directory after the modules have installed.
+    let needs_opt_promotion = modules
+        .iter()
+        .any(|rm| !rm.module.remote_rpms.is_empty() || !rm.module.local_rpms.is_empty());
+    let needs_usrlocal_promotion = modules.iter().any(|rm| !rm.module.appimages.is_empty());
+    if needs_opt_promotion || needs_usrlocal_promotion {
+        lines.push(String::new());
+        lines.push("# === atomic/bootc path staging ===".to_string());
+        if needs_opt_promotion {
+            lines.push("if [ -L /opt ]; then mkdir -p /var/opt; fi".to_string());
+        }
+        if needs_usrlocal_promotion {
+            lines.push("if [ -L /usr/local ]; then mkdir -p /var/usrlocal; fi".to_string());
+        }
+    }
+
     for rm in modules {
         let m = &rm.module;
 
@@ -383,6 +403,26 @@ fn generate_build_sh(profile: &Profile, modules: &[ResolvedModule], host: Option
                 ));
             }
             lines.push(format!("systemctl enable --force {}", unit_name));
+        }
+    }
+
+    // ── Promote staged payloads into the image ──
+    // Move /var/opt and /var/usrlocal into real /opt and /usr/local directories
+    // so the packages and AppImages baked above stay part of the atomic image.
+    if needs_opt_promotion || needs_usrlocal_promotion {
+        lines.push(String::new());
+        lines.push("# === promote staged payloads into the image ===".to_string());
+        if needs_opt_promotion {
+            lines.push(
+                "if [ -L /opt ] && [ -d /var/opt ]; then rm -f /opt; mv /var/opt /opt; fi"
+                    .to_string(),
+            );
+        }
+        if needs_usrlocal_promotion {
+            lines.push(
+                "if [ -L /usr/local ] && [ -d /var/usrlocal ]; then rm -f /usr/local; mv /var/usrlocal /usr/local; fi"
+                    .to_string(),
+            );
         }
     }
 
@@ -777,6 +817,53 @@ mod tests {
 
         let none = generate_build_sh(&profile(None, OverlayBackend::Auto), &[], None);
         assert!(!none.contains("base-packages.list"), "{none}");
+    }
+
+    fn resolved_module(yaml: &str) -> ResolvedModule {
+        ResolvedModule {
+            name: "test".to_string(),
+            module: serde_yaml::from_str(yaml).expect("valid module yaml"),
+        }
+    }
+
+    #[test]
+    fn promotes_opt_and_usrlocal_when_rpms_or_appimages_declared() {
+        let modules = vec![resolved_module(
+            "description: test\nlocal_rpms:\n  - app.rpm\nappimages:\n  - App.AppImage\n",
+        )];
+        let out = generate_build_sh(&profile(None, OverlayBackend::Auto), &modules, None);
+        assert!(out.contains("mkdir -p /var/opt"), "{out}");
+        assert!(out.contains("mkdir -p /var/usrlocal"), "{out}");
+        assert!(out.contains("mv /var/opt /opt"), "{out}");
+        assert!(out.contains("mv /var/usrlocal /usr/local"), "{out}");
+    }
+
+    #[test]
+    fn promotes_opt_for_remote_rpms_without_usrlocal() {
+        let modules = vec![resolved_module(
+            "description: test\nremote_rpms:\n  - url: https://example.com/app.rpm\n",
+        )];
+        let out = generate_build_sh(&profile(None, OverlayBackend::Auto), &modules, None);
+        assert!(out.contains("mkdir -p /var/opt"), "{out}");
+        assert!(!out.contains("/var/usrlocal"), "{out}");
+    }
+
+    #[test]
+    fn appimages_only_promote_usrlocal() {
+        let modules = vec![resolved_module(
+            "description: test\nappimages:\n  - App.AppImage\n",
+        )];
+        let out = generate_build_sh(&profile(None, OverlayBackend::Auto), &modules, None);
+        assert!(out.contains("/var/usrlocal"), "{out}");
+        assert!(!out.contains("/var/opt"), "{out}");
+    }
+
+    #[test]
+    fn does_not_promote_paths_without_rpms_or_appimages() {
+        let modules = vec![resolved_module("description: test\npackages:\n  - tmux\n")];
+        let out = generate_build_sh(&profile(None, OverlayBackend::Auto), &modules, None);
+        assert!(!out.contains("/var/opt"), "{out}");
+        assert!(!out.contains("/var/usrlocal"), "{out}");
     }
 }
 

@@ -248,6 +248,14 @@ and the post-build verification confirms each local RPM's package is actually
 installed. The `.gitignore` written by `init` already excludes `*.rpm`, so the
 binaries stay out of git.
 
+On atomic/bootc bases (Bazzite, Silverblue, KineticOS, …) `/opt` is a symlink
+into `/var`, which is machine-local state and is not part of the deployed
+image. `dcli-bootc` stages `/opt` under `/var` before installing, then promotes
+it to a real `/opt` directory in the image, so RPMs that ship their payload
+under `/opt` persist on the running system instead of vanishing. The same
+handling applies to `remote_rpms`. On non-atomic bases `/opt` is a real
+directory already, so this is a no-op.
+
 ### dnf Groups
 
 Install named package groups (fedora groups like `standard`,
@@ -286,6 +294,12 @@ are bind-mounted into the build (never baked into an image layer), changes to
 `appimages/` bust the build cache via the build-input hash, and post-build
 verification confirms each AppImage landed in `/usr/local/bin`. The
 `.gitignore` written by `init` excludes `*.AppImage`/`*.appimage`.
+
+On atomic/bootc bases `/usr/local` is a symlink into `/var`, so an AppImage
+installed there would otherwise vanish on the running system. `dcli-bootc`
+promotes `/usr/local` to a real directory in the image, keeping the AppImages
+installed after deployment. On non-atomic bases `/usr/local` is already a real
+directory, so this is a no-op.
 
 ### Flatpaks
 
