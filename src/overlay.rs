@@ -461,17 +461,17 @@ fn run_kinpkg(action: &str, pkgs: &[String], dry_run: bool) -> Result<()> {
     Ok(())
 }
 
-/// Upgrade every overlay-installed package with `kinpkg upgrade`.
+/// Upgrade every overlay-installed package with `kinpkg overlay-upgrade`.
 fn run_kinpkg_upgrade() -> Result<()> {
     let bin = kinpkg_bin().context("kinpkg not found on PATH")?;
     let status = Command::new("sudo")
         .arg(bin)
-        .arg("upgrade")
+        .arg("overlay-upgrade")
         .arg("-y")
         .status()
-        .context("Failed to execute 'kinpkg upgrade'")?;
+        .context("Failed to execute 'kinpkg overlay-upgrade'")?;
     if !status.success() {
-        anyhow::bail!("kinpkg upgrade failed");
+        anyhow::bail!("kinpkg overlay-upgrade failed");
     }
     Ok(())
 }

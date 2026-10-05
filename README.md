@@ -493,7 +493,8 @@ build, so a rebuild brings the live overlay in line with the module without
 ever discarding what you installed.
 
 `update` goes one step further and also **upgrades the packages already in the
-overlay** (the backend's own upgrade verb — `kinpkg upgrade` / `rum upgrade`),
+overlay** (the backend's own upgrade verb — `kinpkg overlay-upgrade` /
+`rum upgrade`),
 so a system update refreshes the overlay too, not just installs the packages
 the module declares. `build` does not do this. It prompts before applying, and `--force`
 skips the prompt:
@@ -504,9 +505,10 @@ dcli-bootc overlay upgrade --force    # skip the confirmation
 ```
 
 Without `--force`, dcli-bootc passes `-y` to `kinpkg` (or `rum`) only *after*
-you approve, so dnf does not prompt a second time. Running `kinpkg install/
-remove/upgrade` by hand behaves like normal `dnf`: it asks for confirmation
-unless you pass `-y`/`--assumeyes`.
+you approve, so dnf does not prompt a second time. Running `kinpkg install`/
+`remove` by hand behaves like normal `dnf`: it asks for confirmation unless you
+pass `-y`/`--assumeyes`. (`kinpkg update`/`upgrade` is the *system-image*
+update, not an overlay-only operation — see the KineticOS docs.)
 
 Once a package has been baked into *and booted from* the base image it no
 longer needs to live in the overlay module. `prune` drops those:
