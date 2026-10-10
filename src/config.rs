@@ -25,6 +25,17 @@ impl PackageManager {
     }
 }
 
+/// Storage settings used for container builds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum BuildStorage {
+    /// Require native overlay diff with metacopy disabled.
+    #[default]
+    Optimized,
+    /// Explicitly use the system storage settings without optimization.
+    System,
+}
+
 /// Which usr-overlay implementation dcli-bootc reconciles against.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -66,6 +77,10 @@ pub struct Profile {
     /// Auto-detected at build time if not specified; default is "dnf".
     #[serde(default)]
     pub package_manager: PackageManager,
+
+    /// Build storage policy, overridable per host.
+    #[serde(default)]
+    pub build_storage: BuildStorage,
 
     /// Dotfiles from the project's dotfiles/ directory, symlinked into the
     /// invoking user's home (host-side, on build/update or `dcli-bootc dotfiles`)
@@ -205,6 +220,10 @@ pub struct HostConfig {
     /// Optional package manager override for this host
     #[serde(default)]
     pub package_manager: Option<PackageManager>,
+
+    /// Optional build storage policy override for this host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_storage: Option<BuildStorage>,
 
     /// Optional RakuOS `rum` usr-overlay manifest module override for this
     /// host. Lets each machine reconcile its live overlay against its own
@@ -676,6 +695,9 @@ pub fn resolve_effective_profile(
     if let Some(pm) = host_cfg.package_manager {
         profile.package_manager = pm;
     }
+    if let Some(storage) = host_cfg.build_storage {
+        profile.build_storage = storage;
+    }
     if let Some(om) = host_cfg.overlay_module {
         profile.overlay_module = Some(om);
     }
@@ -736,6 +758,43 @@ pub fn resolve_base_image(profile: &Profile, name: Option<&str>) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_storage_defaults_and_yaml_values() {
+        let profile: Profile = serde_yaml::from_str("name: test").unwrap();
+        assert_eq!(profile.build_storage, BuildStorage::Optimized);
+        let host: HostConfig = serde_yaml::from_str("{}").unwrap();
+        assert_eq!(host.build_storage, None);
+
+        for (value, policy) in [
+            ("optimized", BuildStorage::Optimized),
+            ("system", BuildStorage::System),
+        ] {
+            let profile: Profile =
+                serde_yaml::from_str(&format!("name: test\nbuild_storage: {value}")).unwrap();
+            let host: HostConfig =
+                serde_yaml::from_str(&format!("build_storage: {value}")).unwrap();
+            assert_eq!(profile.build_storage, policy);
+            assert_eq!(host.build_storage, Some(policy));
+            assert_eq!(serde_yaml::to_string(&policy).unwrap().trim(), value);
+        }
+    }
+
+    #[test]
+    fn build_storage_rejects_invalid_yaml_values() {
+        for value in ["auto", "Optimized", "true", "[]", "null"] {
+            assert!(serde_yaml::from_str::<Profile>(&format!(
+                "name: test\nbuild_storage: {value}"
+            ))
+            .is_err());
+            // A null optional host value is equivalent to omitting the override.
+            if value != "null" {
+                assert!(
+                    serde_yaml::from_str::<HostConfig>(&format!("build_storage: {value}")).is_err()
+                );
+            }
+        }
+    }
 
     fn kernel(packages: &[&str], remove: Option<&[&str]>, version: Option<&str>) -> KernelConfig {
         KernelConfig {
@@ -804,6 +863,7 @@ mod tests {
             default_tag: "default".to_string(),
             enabled_modules: Vec::new(),
             package_manager: PackageManager::default(),
+            build_storage: BuildStorage::default(),
             dotfiles: Vec::new(),
             overlay_module: None,
             overlay_backend: OverlayBackend::default(),

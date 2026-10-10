@@ -667,6 +667,48 @@ declared in your modules is actually installed (and that every removed
 package is gone). If anything is off, it tells you exactly what and does
 **not** offer to switch to that image.
 
+### Build storage
+
+`build` and `update` default to `build_storage: optimized`. On the machine
+running the build, dcli-bootc checks rootful Podman storage before generating
+files, checking the registry, or pulling the base image. With the `overlay`
+driver, it attempts to disable metacopy and enable native overlay diff to
+avoid slow layer exports. If the storage already meets these requirements,
+the build uses its existing settings.
+
+When metacopy is active, dcli-bootc prepares `metacopy=off` for the build,
+preserving the other driver options and all additional image stores. A second
+`podman info` verifies native diff and unchanged storage identity before the
+build starts. These global Podman options apply only to `podman build`;
+other Podman commands and persistent storage configuration keep their settings.
+If preparation or verification fails, dcli-bootc prints a prominent warning
+with the cause and continues the build with the system Podman storage settings.
+The build may be much slower, but it is attempted once; a failed `podman build`
+is not retried. Unsupported or ambiguous driver options trigger this warning,
+including option aliases whose ordering is lost in `podman info` and additional
+layer stores for which it reports only the last value. Changed storage or
+unavailable native diff does the same. Already optimized storage does not
+require reconstructing its driver options.
+
+To explicitly use the system Podman settings instead, set:
+
+```yaml
+# profile.yaml
+build_storage: system  # Skip optimization checks; builds may be slow.
+```
+
+The default is `optimized` when omitted. A host file can override the profile
+in either direction; omitting the host setting inherits the profile:
+
+```yaml
+# hosts/laptop.yaml
+build_storage: optimized
+```
+
+This setting controls storage on the **build machine**, including when
+building for another host. Other storage drivers keep their existing
+behavior and report that the overlay diff check does not apply.
+
 ### Cache safety
 
 The whole customization runs as a single `RUN` layer with the build files

@@ -13,6 +13,7 @@ use crate::module;
 use crate::plan;
 use crate::project;
 use crate::registry::{self, Freshness};
+use crate::podman_storage_opts::PodmanStorageOptions;
 
 pub fn run(
     project_dir: &Path,
@@ -27,19 +28,90 @@ pub fn run(
     upgrade_overlay: bool,
     host: Option<String>,
 ) -> Result<()> {
-    let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
-    let base_image = config::resolve_base_image(&profile, base_image_sel.as_deref())?;
+    let prepared = PreparedBuild::prepare(project_dir, tag, base_image_sel, host)?;
+    run_prepared(
+        project_dir,
+        &prepared,
+        BuildOptions {
+            auto_reboot,
+            force,
+            no_cache,
+            no_import,
+            no_switch,
+            skip_freshness_check,
+            upgrade_overlay,
+        },
+    )
+}
 
-    // Explicit --tag wins; otherwise a host build is tagged with the host name.
-    // A named base-image variant (e.g. `--base-image nvidia`) defaults to its
-    // own tag so it never overwrites the default AMD/Intel image.
-    let image_tag =
-        profile.effective_tag(tag, active_host.as_deref(), base_image_sel.as_deref());
-    let image_name = project::get_project_name(project_dir)?;
-    let image_ref = format!("localhost/{}:{}", image_name, image_tag);
+/// Resolve the effective build once, before generation or network operations.
+pub(super) struct PreparedBuild {
+    pub(super) profile: config::Profile,
+    pub(super) active_host: Option<String>,
+    pub(super) base_image: String,
+    pub(super) image_name: String,
+    pub(super) image_tag: String,
+    pub(super) image_ref: String,
+    storage: PodmanStorageOptions,
+}
 
-    // ── Make sure Containerfile/build.sh match the current modules + host ──
-    sync_generated(project_dir, &profile, active_host.as_deref())?;
+impl PreparedBuild {
+    pub(super) fn prepare(
+        project_dir: &Path,
+        tag: Option<String>,
+        base_image_sel: Option<String>,
+        host: Option<String>,
+    ) -> Result<Self> {
+        let (profile, active_host) =
+            config::resolve_effective_profile(project_dir, host.as_deref())?;
+        let base_image = config::resolve_base_image(&profile, base_image_sel.as_deref())?;
+        let image_tag =
+            profile.effective_tag(tag, active_host.as_deref(), base_image_sel.as_deref());
+        let image_name = project::get_project_name(project_dir)?;
+        let image_ref = format!("localhost/{}:{}", image_name, image_tag);
+        let storage = PodmanStorageOptions::prepare(profile.build_storage);
+        Ok(Self {
+            profile,
+            active_host,
+            base_image,
+            image_name,
+            image_tag,
+            image_ref,
+            storage,
+        })
+    }
+}
+
+pub(super) struct BuildOptions {
+    pub(super) auto_reboot: bool,
+    pub(super) force: bool,
+    pub(super) no_cache: bool,
+    pub(super) no_import: bool,
+    pub(super) no_switch: bool,
+    pub(super) skip_freshness_check: bool,
+    pub(super) upgrade_overlay: bool,
+}
+
+pub(super) fn run_prepared(
+    project_dir: &Path,
+    prepared: &PreparedBuild,
+    options: BuildOptions,
+) -> Result<()> {
+    let BuildOptions {
+        auto_reboot,
+        force,
+        no_cache,
+        no_import,
+        no_switch,
+        skip_freshness_check,
+        upgrade_overlay,
+    } = options;
+    let profile = &prepared.profile;
+    let active_host = &prepared.active_host;
+    let base_image = &prepared.base_image;
+    let image_name = &prepared.image_name;
+    let image_tag = &prepared.image_tag;
+    let image_ref = &prepared.image_ref;
 
     println!(
         "{} Building {} from {}",
@@ -53,18 +125,18 @@ pub fn run(
     if !skip_freshness_check
         && handoff_to_update_if_stale(
             project_dir,
-            &base_image,
-            &image_tag,
-            base_image_sel.clone(),
+            prepared,
             auto_reboot,
             force,
             no_import,
             no_switch,
-            active_host.clone(),
         )?
     {
         return Ok(());
     }
+
+    // Generate only for the build that will actually run.
+    sync_generated(project_dir, profile, active_host.as_deref())?;
 
     // ── Show what the build will do before doing any work ──
     // (skipped when called from `update`, which already printed the plan
@@ -74,8 +146,8 @@ pub fn run(
         plan::print_build_plan(
             project_dir,
             &modules,
-            &image_ref,
-            &base_image,
+            image_ref,
+            base_image,
             profile.package_manager,
             profile.kernel.as_ref(),
         );
@@ -91,8 +163,9 @@ pub fn run(
 
     // ── podman build (inherits stdin so sudo can prompt) ──
     let mut cmd = Command::new("sudo");
-    cmd.arg("podman")
-        .arg("build")
+    cmd.arg("podman");
+    prepared.storage.apply(&mut cmd);
+    cmd.arg("build")
         .arg("--build-arg")
         .arg(format!("BASE_IMAGE={}", base_image))
         .arg("--build-arg")
@@ -117,13 +190,13 @@ pub fn run(
     println!("{} Build complete", "✓".green());
 
     // ── Show what was built, and whether it differs from the booted deployment ──
-    let built_digest = bootc::local_image_digest(&image_ref);
+    let built_digest = bootc::local_image_digest(image_ref);
     if let Some(digest) = &built_digest {
         println!("  Image digest: {}", bootc::short_digest(digest));
     }
 
     // ── Verify the image actually contains what the modules declare ──
-    verify_packages(project_dir, &profile, &image_ref)?;
+    verify_packages(project_dir, profile, image_ref)?;
 
     // ── Symlink dotfiles into the invoking user's home (host-side; the
     // container build cannot touch home directories). Failures are reported
@@ -141,7 +214,7 @@ pub fn run(
     // below is additive), so this is informational: run `overlay import` to
     // record them.
     if no_import && !force {
-        match crate::commands::overlay::undeclared_live_packages(project_dir, &profile) {
+        match crate::commands::overlay::undeclared_live_packages(project_dir, profile) {
             Ok(pending) if !pending.is_empty() => {
                 println!();
                 println!(
@@ -167,7 +240,8 @@ pub fn run(
     // packages but never remove live ones the manifest does not declare, so an
     // overlay package installed with dnf/kinpkg since the last import is not
     // silently deleted. Only an explicit `overlay sync` is authoritative.
-    if let Err(e) = crate::commands::overlay::sync(project_dir, &profile, force, false, false, false) {
+    if let Err(e) = crate::commands::overlay::sync(project_dir, profile, force, false, false, false)
+    {
         eprintln!("{} Overlay sync failed: {:#}", "!".yellow(), e);
     }
 
@@ -196,7 +270,7 @@ pub fn run(
     // they'd stay at their old versions. No-op on hosts without a usable
     // overlay backend or projects without overlay_module.
     if upgrade_overlay {
-        if let Err(e) = crate::commands::overlay::upgrade(&profile, force, true) {
+        if let Err(e) = crate::commands::overlay::upgrade(profile, force, true) {
             eprintln!("{} Overlay upgrade failed: {:#}", "!".yellow(), e);
         }
     }
@@ -204,7 +278,7 @@ pub fn run(
     // ── Reconcile the invoking user's flatpak installation with the modules'
     // flatpaks (host-side; flatpaks are never baked into the image).
     // No-op when flatpak is absent or nothing is declared.
-    if let Err(e) = crate::flatpak::sync(project_dir, &profile, force, false, false) {
+    if let Err(e) = crate::flatpak::sync(project_dir, profile, force, false, false) {
         eprintln!("{} User flatpak sync failed: {:#}", "!".yellow(), e);
     }
 
@@ -228,7 +302,7 @@ pub fn run(
             image_tag
         );
     } else if force || bootc::confirm("Switch bootc deployment to this image?") {
-        let staged = bootc::switch_to_local(&image_ref)?;
+        let staged = bootc::switch_to_local(image_ref)?;
         bootc::maybe_reboot(auto_reboot, staged);
     } else {
         println!();
@@ -244,15 +318,13 @@ pub fn run(
 /// should stop.
 fn handoff_to_update_if_stale(
     project_dir: &Path,
-    base_image: &str,
-    image_tag: &str,
-    base_image_sel: Option<String>,
+    prepared: &PreparedBuild,
     auto_reboot: bool,
     force: bool,
     no_import: bool,
     no_switch: bool,
-    host: Option<String>,
 ) -> Result<bool> {
+    let base_image = &prepared.base_image;
     match registry::check_base_freshness(base_image) {
         Freshness::Fresh => {
             println!("  {}", "Base image is current".dimmed());
@@ -280,16 +352,14 @@ fn handoff_to_update_if_stale(
             if bootc::confirm("Pull the latest base and rebuild fresh (dcli-bootc update) instead?")
             {
                 println!();
-                update::run(
+                update::run_prepared(
                     project_dir,
-                    Some(image_tag.to_string()),
+                    prepared,
                     force,
                     auto_reboot,
-                    base_image_sel,
                     false,
                     no_import,
                     no_switch,
-                    host,
                 )?;
                 return Ok(true);
             }
