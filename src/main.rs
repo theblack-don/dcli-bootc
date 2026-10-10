@@ -79,7 +79,12 @@ enum Commands {
         #[arg(short, long)]
         tag: Option<String>,
 
-        /// Use NVIDIA base image variant
+        /// Named base image from profile.yaml's `base_images` map; the image
+        /// tag defaults to this name (`--base-image deck` builds `:deck`)
+        #[arg(long, value_name = "NAME")]
+        base_image: Option<String>,
+
+        /// Alias for `--base-image nvidia`
         #[arg(long)]
         nvidia: bool,
 
@@ -135,7 +140,12 @@ enum Commands {
         /// Target tag (e.g. "stable", "latest")
         tag: Option<String>,
 
-        /// Use NVIDIA base image variant
+        /// Named base image from profile.yaml's `base_images` map; the image
+        /// tag defaults to this name (`--base-image deck` builds `:deck`)
+        #[arg(long, value_name = "NAME")]
+        base_image: Option<String>,
+
+        /// Alias for `--base-image nvidia`
         #[arg(long)]
         nvidia: bool,
 
@@ -302,6 +312,7 @@ fn main() -> Result<()> {
                 }
                 Commands::Build {
                     tag,
+                    base_image,
                     nvidia,
                     reboot,
                     force,
@@ -309,10 +320,12 @@ fn main() -> Result<()> {
                     no_import,
                     no_switch,
                 } => {
+                    let base_image =
+                        base_image.or_else(|| nvidia.then(|| "nvidia".to_string()));
                     commands::build::run(
                         &project_path,
                         tag,
-                        nvidia,
+                        base_image,
                         reboot,
                         force,
                         no_cache,
@@ -332,6 +345,7 @@ fn main() -> Result<()> {
                 }
                 Commands::Update {
                     tag,
+                    base_image,
                     nvidia,
                     force,
                     reboot,
@@ -339,12 +353,14 @@ fn main() -> Result<()> {
                     no_import,
                     no_switch,
                 } => {
+                    let base_image =
+                        base_image.or_else(|| nvidia.then(|| "nvidia".to_string()));
                     commands::update::run(
                         &project_path,
                         tag,
                         force,
                         reboot,
-                        nvidia,
+                        base_image,
                         cache,
                         no_import,
                         no_switch,

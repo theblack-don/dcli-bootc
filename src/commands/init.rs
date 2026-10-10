@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use std::collections::BTreeMap;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
@@ -107,6 +108,7 @@ fn scaffold_new(project_dir: &Path, _name: Option<&str>, _force: bool) -> Result
         name: image_name.clone(),
         base_image: "ghcr.io/ublue-os/bazzite:stable".to_string(),
         nvidia_base_image: Some("ghcr.io/ublue-os/bazzite-nvidia-open:stable".to_string()),
+        base_images: BTreeMap::new(),
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
         package_manager: PackageManager::default(),
@@ -395,6 +397,7 @@ fn import_existing(project_dir: &Path, from_path: &str, _force: bool) -> Result<
         name: image_name.clone(),
         base_image: base_image.to_string(),
         nvidia_base_image: None,
+        base_images: BTreeMap::new(),
         default_tag: "latest".to_string(),
         enabled_modules: vec!["base".to_string()],
         package_manager: PackageManager::default(),

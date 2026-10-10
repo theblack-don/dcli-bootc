@@ -770,6 +770,7 @@ mod tests {
             name: "test".to_string(),
             base_image: "ghcr.io/ublue-os/bazzite:stable".to_string(),
             nvidia_base_image: None,
+            base_images: std::collections::BTreeMap::new(),
             default_tag: "latest".to_string(),
             enabled_modules: vec![],
             package_manager: PackageManager::Dnf,

@@ -182,6 +182,36 @@ into the image at `/usr/share/<name>/project/`. That is what lets a running
 system reproduce or fork its recipe offline via `dcli-bootc init`. The snapshot
 excludes `.git`, `.dcli-bootc`, `build_files/`, `output/`, and `target/`.
 
+### Base-image variants
+
+`profile.yaml` can declare named base images beyond `base_image` (the
+default/AMD-Intel image). Select one at build time with `--base-image <name>`:
+
+```yaml
+base_image: ghcr.io/ublue-os/bazzite:stable          # default (AMD/Intel)
+
+base_images:
+  nvidia: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+  nvidia-legacy: ghcr.io/ublue-os/bazzite-nvidia:stable
+  deck: ghcr.io/ublue-os/bazzite-deck:stable
+```
+
+```bash
+dcli-bootc build  --base-image nvidia-legacy   # tagged :nvidia-legacy
+dcli-bootc update --base-image deck            # tagged :deck
+```
+
+A named variant defaults its tag to the variant name, so `--base-image deck`
+alone builds `:deck` (no `--tag` needed) and variants never overwrite the
+`default_tag` image; an explicit `--tag` still wins. The selected image is
+passed to the build as `--build-arg BASE_IMAGE=...`, so the generated
+`Containerfile` keeps the profile's declared `base_image` as its default.
+
+`--nvidia` remains as an alias for `--base-image nvidia`. For backwards
+compatibility, `nvidia` falls back to the legacy `nvidia_base_image:` field when
+`base_images` has no `nvidia` entry — prefer `base_images`, which is what lets a
+variant live entirely in `profile.yaml` instead of a separate `hosts/` file.
+
 ## Multi-host
 
 One project can build image variants for several machines. `profile.yaml`
@@ -599,16 +629,17 @@ write-temp-then-rename can replace its symlink with a real file; re-running
 ## Build
 
 ```bash
-dcli-bootc build             # Build and tag as the profile's default_tag
-dcli-bootc build --nvidia    # NVIDIA base image variant, tagged :nvidia
-dcli-bootc build --no-cache  # Disable podman layer cache entirely
-dcli-bootc build --reboot    # Reboot after switching
-dcli-bootc build --no-switch # Build only; never switch the deployment (CI)
+dcli-bootc build                    # Build and tag as the profile's default_tag
+dcli-bootc build --nvidia           # NVIDIA base image variant, tagged :nvidia
+dcli-bootc build --base-image deck  # Named variant from profile.yaml, tagged :deck
+dcli-bootc build --no-cache         # Disable podman layer cache entirely
+dcli-bootc build --reboot           # Reboot after switching
+dcli-bootc build --no-switch        # Build only; never switch the deployment (CI)
 ```
 
-NVIDIA builds default to the `nvidia` tag instead of `default_tag`, so the
-AMD/Intel and NVIDIA images coexist locally and can be pushed as separate
-registry tags; `--tag` overrides either.
+Named variants default to the variant name as their tag instead of
+`default_tag`, so the AMD/Intel and variant images coexist locally and can be
+pushed as separate registry tags; `--tag` overrides either.
 
 `build` automatically re-generates `Containerfile` and `build_files/build.sh`
 if they have drifted from your modules, so a build always reflects the current
@@ -674,6 +705,7 @@ dcli-bootc status            # Show tracked/booted/staged images and digests
 dcli-bootc update            # Pull latest base image, rebuild, and switch
 dcli-bootc update --nvidia   # Update using the NVIDIA base image variant
                              # (stays on the :nvidia tag)
+dcli-bootc update --base-image deck  # Update the deck variant (stays on :deck)
 dcli-bootc update --reboot   # Same, then reboot
 dcli-bootc update --no-switch # Pull + rebuild but leave the deployment (CI)
 ```

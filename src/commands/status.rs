@@ -24,6 +24,9 @@ pub fn run(project_dir: &Path, host: Option<String>) -> Result<()> {
     if let Some(nv) = &profile.nvidia_base_image {
         println!("  NVIDIA variant: {}", nv);
     }
+    for (name, image) in &profile.base_images {
+        println!("  Base image [{}]: {}", name, image);
+    }
     println!(
         "  Package manager: {}",
         profile.package_manager.as_str()

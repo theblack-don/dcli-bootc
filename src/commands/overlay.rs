@@ -1176,6 +1176,7 @@ mod tests {
             name: "test".to_string(),
             base_image: "img".to_string(),
             nvidia_base_image: None,
+            base_images: std::collections::BTreeMap::new(),
             default_tag: "latest".to_string(),
             enabled_modules: Vec::new(),
             package_manager: config::PackageManager::default(),

@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// Supported package managers for build-time package operations
@@ -48,6 +49,13 @@ pub struct Profile {
     #[serde(default)]
     pub nvidia_base_image: Option<String>,
 
+    /// Named base-image variants, selectable with `--base-image <name>` (the
+    /// `--nvidia` flag is an alias for `--base-image nvidia`). `base_image`
+    /// above stays the default/AMD-Intel image and the Containerfile's
+    /// default `BASE_IMAGE`; variant builds override it via `--build-arg`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub base_images: BTreeMap<String, String>,
+
     #[serde(default = "default_tag")]
     pub default_tag: String,
 
@@ -92,16 +100,18 @@ pub struct Profile {
 
 impl Profile {
     /// Resolve the local tag for a build/update. An explicit `--tag` wins, then
-    /// an active host overlay, then the variant default: `nvidia` for NVIDIA
-    /// builds, so they cannot overwrite the default AMD/Intel image.
-    pub fn effective_tag(&self, tag: Option<String>, host: Option<&str>, nvidia: bool) -> String {
-        tag.or_else(|| host.map(str::to_string)).unwrap_or_else(|| {
-            if nvidia {
-                "nvidia".to_string()
-            } else {
-                self.default_tag.clone()
-            }
-        })
+    /// an active host overlay, then the selected base-image variant name (e.g.
+    /// `nvidia`, `deck`), then the profile's `default_tag`. Tagging variants by
+    /// name keeps them from overwriting the default AMD/Intel image.
+    pub fn effective_tag(
+        &self,
+        tag: Option<String>,
+        host: Option<&str>,
+        base_image: Option<&str>,
+    ) -> String {
+        tag.or_else(|| host.map(str::to_string))
+            .or_else(|| base_image.map(str::to_string))
+            .unwrap_or_else(|| self.default_tag.clone())
     }
 }
 
@@ -680,6 +690,49 @@ pub fn resolve_effective_profile(
     Ok((profile, Some(host_name)))
 }
 
+/// Resolve a named base image from the profile's `base_images` map.
+///
+/// `nvidia` falls back to the legacy `nvidia_base_image` field, and then to
+/// `base_image` (its historical behaviour: an absent NVIDIA base means "build
+/// the default"), so projects written before `base_images` existed keep
+/// working.
+pub fn resolve_named_base_image(profile: &Profile, name: &str) -> Result<String> {
+    if let Some(image) = profile.base_images.get(name) {
+        return Ok(image.clone());
+    }
+    if name == "nvidia" {
+        return Ok(profile
+            .nvidia_base_image
+            .clone()
+            .unwrap_or_else(|| profile.base_image.clone()));
+    }
+    if profile.base_images.is_empty() {
+        anyhow::bail!(
+            "Unknown base image '{}': profile.yaml has no `base_images` map",
+            name
+        );
+    }
+    anyhow::bail!(
+        "Unknown base image '{}'. Available: {}",
+        name,
+        profile
+            .base_images
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// Resolve the base image to build from: an explicit named variant, or the
+/// profile's default `base_image` when no variant was selected.
+pub fn resolve_base_image(profile: &Profile, name: Option<&str>) -> Result<String> {
+    match name {
+        Some(name) => resolve_named_base_image(profile, name),
+        None => Ok(profile.base_image.clone()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -732,6 +785,131 @@ mod tests {
                 "kernel-cachyos-6.11.5".to_string(),
                 "kernel-cachyos-modules-6.11.5".to_string()
             ]
+        );
+    }
+
+    fn profile_with_base_images(
+        base: &str,
+        nvidia: Option<&str>,
+        images: &[(&str, &str)],
+    ) -> Profile {
+        Profile {
+            name: "test".to_string(),
+            base_image: base.to_string(),
+            nvidia_base_image: nvidia.map(str::to_string),
+            base_images: images
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            default_tag: "default".to_string(),
+            enabled_modules: Vec::new(),
+            package_manager: PackageManager::default(),
+            dotfiles: Vec::new(),
+            overlay_module: None,
+            overlay_backend: OverlayBackend::default(),
+            include_project: false,
+            kernel: None,
+        }
+    }
+
+    #[test]
+    fn base_image_defaults_to_profile_base() {
+        let p = profile_with_base_images("base:img", None, &[]);
+        assert_eq!(resolve_base_image(&p, None).unwrap(), "base:img");
+    }
+
+    #[test]
+    fn named_base_image_resolves_from_map() {
+        let p = profile_with_base_images(
+            "base:img",
+            None,
+            &[("deck", "base:deck"), ("nvidia-legacy", "base:nv")],
+        );
+        assert_eq!(resolve_base_image(&p, Some("deck")).unwrap(), "base:deck");
+        assert_eq!(
+            resolve_base_image(&p, Some("nvidia-legacy")).unwrap(),
+            "base:nv"
+        );
+    }
+
+    #[test]
+    fn nvidia_falls_back_to_legacy_field() {
+        let p = profile_with_base_images("base:img", Some("base:nv-open"), &[]);
+        assert_eq!(
+            resolve_base_image(&p, Some("nvidia")).unwrap(),
+            "base:nv-open"
+        );
+    }
+
+    #[test]
+    fn nvidia_without_any_nvidia_base_builds_the_default() {
+        let p = profile_with_base_images("base:img", None, &[]);
+        assert_eq!(resolve_base_image(&p, Some("nvidia")).unwrap(), "base:img");
+    }
+
+    #[test]
+    fn base_images_map_wins_over_legacy_nvidia_field() {
+        let p = profile_with_base_images("base:img", Some("base:old"), &[("nvidia", "base:new")]);
+        assert_eq!(resolve_base_image(&p, Some("nvidia")).unwrap(), "base:new");
+    }
+
+    #[test]
+    fn unknown_base_image_lists_available() {
+        let p = profile_with_base_images("base:img", None, &[("deck", "base:deck")]);
+        let err = resolve_base_image(&p, Some("nope")).unwrap_err().to_string();
+        assert!(err.contains("nope"), "{err}");
+        assert!(err.contains("deck"), "{err}");
+    }
+
+    #[test]
+    fn effective_tag_prefers_explicit_then_host_then_variant() {
+        let p = profile_with_base_images("base:img", None, &[("deck", "base:deck")]);
+        assert_eq!(
+            p.effective_tag(Some("explicit".into()), Some("host"), Some("deck")),
+            "explicit"
+        );
+        assert_eq!(p.effective_tag(None, Some("host"), Some("deck")), "host");
+        assert_eq!(p.effective_tag(None, None, Some("deck")), "deck");
+        assert_eq!(p.effective_tag(None, None, None), "default");
+    }
+
+    #[test]
+    fn profile_yaml_parses_base_images() {
+        let profile: Profile = serde_yaml::from_str(
+            r#"
+name: kineticos
+base_image: ghcr.io/ublue-os/bazzite:stable
+base_images:
+  nvidia: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+  deck: ghcr.io/ublue-os/bazzite-deck:stable
+default_tag: default
+enabled_modules: [base]
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            profile.base_images.get("deck").map(String::as_str),
+            Some("ghcr.io/ublue-os/bazzite-deck:stable")
+        );
+        assert_eq!(resolve_base_image(&profile, Some("deck")).unwrap(), "ghcr.io/ublue-os/bazzite-deck:stable");
+    }
+
+    #[test]
+    fn profile_without_base_images_still_parses() {
+        let profile: Profile = serde_yaml::from_str(
+            r#"
+name: legacy
+base_image: ghcr.io/ublue-os/bazzite:stable
+nvidia_base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
+default_tag: latest
+enabled_modules: [base]
+"#,
+        )
+        .unwrap();
+        assert!(profile.base_images.is_empty());
+        assert_eq!(
+            resolve_base_image(&profile, Some("nvidia")).unwrap(),
+            "ghcr.io/ublue-os/bazzite-nvidia-open:stable"
         );
     }
 }

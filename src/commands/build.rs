@@ -17,7 +17,7 @@ use crate::registry::{self, Freshness};
 pub fn run(
     project_dir: &Path,
     tag: Option<String>,
-    nvidia: bool,
+    base_image_sel: Option<String>,
     auto_reboot: bool,
     force: bool,
     no_cache: bool,
@@ -28,20 +28,13 @@ pub fn run(
     host: Option<String>,
 ) -> Result<()> {
     let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
-
-    let base_image = if nvidia {
-        profile
-            .nvidia_base_image
-            .as_deref()
-            .unwrap_or(&profile.base_image)
-    } else {
-        &profile.base_image
-    };
+    let base_image = config::resolve_base_image(&profile, base_image_sel.as_deref())?;
 
     // Explicit --tag wins; otherwise a host build is tagged with the host name.
-    // NVIDIA builds land on their own `nvidia` tag so they never overwrite the
-    // default AMD/Intel image.
-    let image_tag = profile.effective_tag(tag, active_host.as_deref(), nvidia);
+    // A named base-image variant (e.g. `--base-image nvidia`) defaults to its
+    // own tag so it never overwrites the default AMD/Intel image.
+    let image_tag =
+        profile.effective_tag(tag, active_host.as_deref(), base_image_sel.as_deref());
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
 
@@ -60,9 +53,9 @@ pub fn run(
     if !skip_freshness_check
         && handoff_to_update_if_stale(
             project_dir,
-            base_image,
+            &base_image,
             &image_tag,
-            nvidia,
+            base_image_sel.clone(),
             auto_reboot,
             force,
             no_import,
@@ -82,7 +75,7 @@ pub fn run(
             project_dir,
             &modules,
             &image_ref,
-            base_image,
+            &base_image,
             profile.package_manager,
             profile.kernel.as_ref(),
         );
@@ -253,7 +246,7 @@ fn handoff_to_update_if_stale(
     project_dir: &Path,
     base_image: &str,
     image_tag: &str,
-    nvidia: bool,
+    base_image_sel: Option<String>,
     auto_reboot: bool,
     force: bool,
     no_import: bool,
@@ -292,7 +285,7 @@ fn handoff_to_update_if_stale(
                     Some(image_tag.to_string()),
                     force,
                     auto_reboot,
-                    nvidia,
+                    base_image_sel,
                     false,
                     no_import,
                     no_switch,

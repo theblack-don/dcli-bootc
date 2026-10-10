@@ -17,22 +17,14 @@ pub fn run(
     tag: Option<String>,
     force: bool,
     auto_reboot: bool,
-    nvidia: bool,
+    base_image_sel: Option<String>,
     cache: bool,
     no_import: bool,
     no_switch: bool,
     host: Option<String>,
 ) -> Result<()> {
     let (profile, active_host) = config::resolve_effective_profile(project_dir, host.as_deref())?;
-
-    let base_image = if nvidia {
-        profile
-            .nvidia_base_image
-            .as_deref()
-            .unwrap_or(&profile.base_image)
-    } else {
-        &profile.base_image
-    };
+    let base_image = config::resolve_base_image(&profile, base_image_sel.as_deref())?;
 
     println!("{} Updating base image {}", "▶".cyan(), base_image);
     if let Some(h) = &active_host {
@@ -43,9 +35,10 @@ pub fn run(
     // ── Show what the rebuild will do before pulling anything ──
     // (build::run skips its own plan output when invoked from here)
     // Explicit --tag wins; otherwise a host build is tagged with the host name.
-    // NVIDIA builds land on their own `nvidia` tag so they never overwrite the
-    // default AMD/Intel image.
-    let image_tag = profile.effective_tag(tag.clone(), active_host.as_deref(), nvidia);
+    // A named base-image variant (e.g. `--base-image nvidia`) defaults to its
+    // own tag so it never overwrites the default AMD/Intel image.
+    let image_tag =
+        profile.effective_tag(tag.clone(), active_host.as_deref(), base_image_sel.as_deref());
     let image_name = project::get_project_name(project_dir)?;
     let image_ref = format!("localhost/{}:{}", image_name, image_tag);
     let modules = module::load_enabled_modules(project_dir, &profile.enabled_modules)?;
@@ -53,18 +46,18 @@ pub fn run(
         project_dir,
         &modules,
         &image_ref,
-        base_image,
+        &base_image,
         profile.package_manager,
         profile.kernel.as_ref(),
     );
 
     // ── Pull the latest base image ──
-    let base_before = bootc::local_image_digest(base_image);
+    let base_before = bootc::local_image_digest(&base_image);
     println!("  Pulling {} ...", base_image);
     let status = Command::new("sudo")
         .arg("podman")
         .arg("pull")
-        .arg(base_image)
+        .arg(&base_image)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
@@ -77,7 +70,7 @@ pub fn run(
     }
 
     println!("{} Pulled {}", "✓".green(), base_image);
-    match (&base_before, &bootc::local_image_digest(base_image)) {
+    match (&base_before, &bootc::local_image_digest(&base_image)) {
         (Some(before), Some(after)) if before != after => println!(
             "  Base image updated: {} → {}",
             bootc::short_digest(before),
@@ -92,6 +85,7 @@ pub fn run(
     // (skip the freshness check — we just pulled the base image; upgrade the
     // overlay's packages too, so one `update` refreshes image + overlay)
     build::run(
-        project_dir, tag, nvidia, auto_reboot, force, !cache, no_import, no_switch, true, true, host,
+        project_dir, tag, base_image_sel, auto_reboot, force, !cache, no_import, no_switch, true,
+        true, host,
     )
 }
