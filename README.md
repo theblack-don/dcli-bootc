@@ -672,7 +672,7 @@ package is gone). If anything is off, it tells you exactly what and does
 `build` and `update` default to `build_storage: optimized`. On the machine
 running the build, dcli-bootc checks rootful Podman storage before generating
 files, checking the registry, or pulling the base image. With the `overlay`
-driver, it requires **metacopy disabled and native overlay diff enabled** to
+driver, it attempts to disable metacopy and enable native overlay diff to
 avoid slow layer exports. If the storage already meets these requirements,
 the build uses its existing settings.
 
@@ -681,9 +681,14 @@ preserving the other driver options and all additional image stores. A second
 `podman info` verifies native diff and unchanged storage identity before the
 build starts. These global Podman options apply only to `podman build`;
 other Podman commands and persistent storage configuration keep their settings.
-There is no automatic fallback or retry. Unsupported or ambiguous storage
-information, changed storage, or unavailable native diff stops the command
-early with an error.
+If preparation or verification fails, dcli-bootc prints a prominent warning
+with the cause and continues the build with the system Podman storage settings.
+The build may be much slower, but it is attempted once; a failed `podman build`
+is not retried. Unsupported or ambiguous driver options trigger this warning,
+including option aliases whose ordering is lost in `podman info` and additional
+layer stores for which it reports only the last value. Changed storage or
+unavailable native diff does the same. Already optimized storage does not
+require reconstructing its driver options.
 
 To explicitly use the system Podman settings instead, set:
 

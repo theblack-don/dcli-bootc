@@ -10,7 +10,7 @@ mod overlay;
 mod plan;
 mod project;
 mod registry;
-mod storage_opts;
+mod podman_storage_opts;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

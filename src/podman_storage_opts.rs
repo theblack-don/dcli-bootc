@@ -8,13 +8,22 @@ use std::process::{Command, Stdio};
 use crate::config::BuildStorage;
 
 #[derive(Debug, Default)]
-pub struct StorageOptions {
+pub struct PodmanStorageOptions {
     args: Vec<String>,
 }
 
-impl StorageOptions {
-    pub fn prepare(policy: BuildStorage) -> Result<Self> {
-        Self::prepare_with(policy, read_store)
+impl PodmanStorageOptions {
+    pub fn prepare(policy: BuildStorage) -> Self {
+        match Self::prepare_with(policy, read_store) {
+            Ok(options) => options,
+            Err(error) => {
+                eprintln!();
+                eprintln!("  ! WARNING: Optimized Podman storage is unavailable: {error:#}");
+                eprintln!("  ! WARNING: Continuing with system Podman storage settings. The build may be much slower.");
+                eprintln!();
+                Self::default()
+            }
+        }
     }
 
     /// Append global options after `podman` and before its subcommand.
@@ -32,7 +41,7 @@ impl StorageOptions {
         }
 
         Self::prepare_optimized(&mut read_info).context(
-            "Cannot prepare optimized build storage. Fix the reported storage settings, or explicitly set build_storage: system in profile.yaml or the selected host file",
+            "Cannot prepare optimized build storage. To skip this warning, set build_storage: system in profile.yaml or the selected host file",
         )
     }
 
@@ -47,7 +56,7 @@ impl StorageOptions {
             return Ok(Self::default());
         }
 
-        let mut before = StoreSnapshot::new(info)?;
+        let before = PodmanStoreSnapshot::new(info)?;
         if !before.metacopy {
             if !before.native_diff {
                 bail!("Native Overlay Diff is disabled even though metacopy is not in use");
@@ -56,10 +65,8 @@ impl StorageOptions {
             return Ok(Self::default());
         }
 
-        let mountopt = before
-            .options
-            .entry("overlay.mountopt".to_string())
-            .or_default();
+        let mut options = normalize_options(&before.info["graphOptions"])?;
+        let mountopt = options.entry("overlay.mountopt".to_string()).or_default();
         let mut tokens: Vec<_> = mountopt
             .first()
             .map(String::as_str)
@@ -75,16 +82,19 @@ impl StorageOptions {
         *mountopt = vec![tokens.join(",")];
 
         let mut args = Vec::new();
-        for (key, values) in &before.options {
+        for (key, values) in &options {
             for value in values {
                 args.push("--storage-opt".to_string());
                 args.push(format!("{}={}", key, value));
             }
         }
 
-        let after = StoreSnapshot::new(read_info(&args)?)?;
+        let after = PodmanStoreSnapshot::new(read_info(&args)?)?;
         if after.metacopy || !after.native_diff {
             bail!("Podman did not enable native overlay diff with metacopy disabled");
+        }
+        if options != normalize_options(&after.info["graphOptions"])? {
+            bail!("Podman storage field 'graphOptions' changed while disabling metacopy");
         }
         let expected = before.stable_info()?;
         let actual = after.stable_info()?;
@@ -126,14 +136,13 @@ fn read_store(args: &[String]) -> Result<Value> {
     serde_json::from_slice(&output.stdout).context("Invalid Store JSON from podman info")
 }
 
-struct StoreSnapshot {
+struct PodmanStoreSnapshot {
     info: Value,
-    options: BTreeMap<String, Vec<String>>,
     metacopy: bool,
     native_diff: bool,
 }
 
-impl StoreSnapshot {
+impl PodmanStoreSnapshot {
     fn new(info: Value) -> Result<Self> {
         for key in ["graphDriverName", "graphRoot", "runRoot", "volumePath"] {
             store_string(&info, key)?;
@@ -143,10 +152,8 @@ impl StoreSnapshot {
         }
         let metacopy = store_status(&info, "Using metacopy")?;
         let native_diff = store_status(&info, "Native Overlay Diff")?;
-        let options = normalize_options(&info["graphOptions"])?;
         Ok(Self {
             info,
-            options,
             metacopy,
             native_diff,
         })
@@ -163,13 +170,11 @@ impl StoreSnapshot {
             "imageStore",
             "graphRootAllocated",
             "graphRootUsed",
+            // Driver options are normalized and compared separately.
+            "graphOptions",
         ] {
             store.remove(key);
         }
-        store.insert(
-            "graphOptions".to_string(),
-            serde_json::to_value(&self.options)?,
-        );
         let status = store
             .get_mut("graphStatus")
             .and_then(Value::as_object_mut)
@@ -226,7 +231,6 @@ fn normalize_options(value: &Value) -> Result<BTreeMap<String, Vec<String>>> {
             .context("Podman overlay.imagestore must be a string")?;
         match &stores {
             Some(stores) if scalar == stores.last().map(String::as_str).unwrap_or("") => {}
-            None if scalar.is_empty() => {}
             _ => bail!("Ambiguous Podman image stores: overlay.imagestore does not match an additionalImageStores list"),
         }
     }
@@ -239,6 +243,20 @@ fn normalize_options(value: &Value) -> Result<BTreeMap<String, Vec<String>>> {
     for (key, value) in graph {
         if key == "overlay.additionalImageStores" || key == "overlay.imagestore" {
             continue;
+        }
+        // The driver also accepts unprefixed, overlay2 and case-insensitive
+        // aliases. Info loses their ordering, so replaying them can change
+        // precedence or hide mount options behind the new overlay.mountopt.
+        if !key.starts_with("overlay.")
+            || key.starts_with("overlay..")
+            || *key != key.to_ascii_lowercase()
+        {
+            bail!("Unsupported Podman storage option spelling '{}'; cannot safely reconstruct driver options", key);
+        }
+        // Unlike imagestore, repeated layer stores are collapsed to the last
+        // scalar by info. Even an empty final value can hide earlier stores.
+        if key == "overlay.additionallayerstore" {
+            bail!("Cannot preserve Podman additional layer stores: info reports only the last overlay.additionallayerstore value");
         }
         let text: &str = match value {
             Value::String(text) => text,
@@ -285,9 +303,9 @@ mod tests {
         })
     }
 
-    fn prepare(infos: Vec<Value>) -> Result<StorageOptions> {
+    fn prepare(infos: Vec<Value>) -> Result<PodmanStorageOptions> {
         let mut infos: VecDeque<_> = infos.into();
-        let result = StorageOptions::prepare_with(BuildStorage::Optimized, |_| {
+        let result = PodmanStorageOptions::prepare_with(BuildStorage::Optimized, |_| {
             Ok(infos.pop_front().expect("Unexpected extra storage check"))
         });
         assert!(infos.is_empty(), "Not all expected storage checks ran");
@@ -296,7 +314,7 @@ mod tests {
 
     #[test]
     fn system_skips_info_and_non_overlay_keeps_system_options() {
-        let system = StorageOptions::prepare_with(BuildStorage::System, |_| {
+        let system = PodmanStorageOptions::prepare_with(BuildStorage::System, |_| {
             panic!("System mode must not inspect or override storage")
         })
         .unwrap();
@@ -308,6 +326,49 @@ mod tests {
     #[test]
     fn native_overlay_without_metacopy_needs_no_override() {
         assert!(prepare(vec![store(false, true)]).unwrap().args.is_empty());
+    }
+
+    #[test]
+    fn native_overlay_does_not_require_reconstructing_driver_options() {
+        for options in [
+            json!({"overlay.imagestore": "/legacy-store"}),
+            json!({"overlay.additionallayerstore": "/layers:ref"}),
+            json!({"mountopt": "nodev"}),
+        ] {
+            let mut info = store(false, true);
+            info["graphOptions"] = options;
+            assert!(prepare(vec![info]).unwrap().args.is_empty());
+        }
+    }
+
+    #[test]
+    fn rejects_layer_stores_that_info_cannot_reconstruct() {
+        // Podman reports only the last repeated additionallayerstore value.
+        // Replaying that scalar could silently drop earlier stores, even if
+        // the second info response is identical to the first.
+        for value in ["/last-layer-store:ref", ""] {
+            assert!(normalize_options(&json!({
+                "overlay.additionallayerstore": value
+            }))
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn rejects_option_aliases_whose_order_info_does_not_preserve() {
+        // The driver accepts aliases, but info cannot retain their ordering.
+        // Adding overlay.mountopt must not replace an aliased mountopt value
+        // or change the precedence of other options by sorting their keys.
+        for options in [
+            json!({"mountopt": "nodev,metacopy=on"}),
+            json!({"overlay2.mountopt": "nodev,metacopy=on"}),
+            json!({"overlay..mountopt": "nodev,metacopy=on"}),
+            json!({"overlay.MountOpt": "nodev,metacopy=on"}),
+            json!({"overlay.ignore_chown_errors": "false", "ignore_chown_errors": "true"}),
+            json!({"overlay.IMAGESTORE": "/last-store"}),
+        ] {
+            assert!(normalize_options(&options).is_err(), "{options}");
+        }
     }
 
     #[test]
@@ -381,7 +442,7 @@ mod tests {
             "Executable": "/usr/bin/fuse-overlayfs", "Version": "1.15", "Package": "fuse-overlayfs"
         });
         let mut calls = 0;
-        let error = StorageOptions::prepare_with(BuildStorage::Optimized, |args| {
+        let error = PodmanStorageOptions::prepare_with(BuildStorage::Optimized, |args| {
             calls += 1;
             if calls == 1 {
                 assert!(args.is_empty());
@@ -434,6 +495,7 @@ mod tests {
             json!({"overlay.additionalImageStores": [123]}),
             json!({"overlay.additionalImageStores": ["/first"], "overlay.imagestore": "/second"}),
             json!({"overlay.imagestore": "/only-scalar"}),
+            json!({"overlay.imagestore": ""}),
             json!({"overlay.imagestore": []}),
         ] {
             assert!(normalize_options(&options).is_err(), "{options}");
@@ -514,7 +576,7 @@ mod tests {
     #[test]
     fn reader_errors_are_reported_without_retry_or_fallback() {
         let mut calls = 0;
-        let error = StorageOptions::prepare_with(BuildStorage::Optimized, |_| {
+        let error = PodmanStorageOptions::prepare_with(BuildStorage::Optimized, |_| {
             calls += 1;
             bail!("test info failure");
         })

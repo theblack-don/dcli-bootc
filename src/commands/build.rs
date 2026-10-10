@@ -13,7 +13,7 @@ use crate::module;
 use crate::plan;
 use crate::project;
 use crate::registry::{self, Freshness};
-use crate::storage_opts::StorageOptions;
+use crate::podman_storage_opts::PodmanStorageOptions;
 
 pub fn run(
     project_dir: &Path,
@@ -52,7 +52,7 @@ pub(super) struct PreparedBuild {
     pub(super) image_name: String,
     pub(super) image_tag: String,
     pub(super) image_ref: String,
-    storage: StorageOptions,
+    storage: PodmanStorageOptions,
 }
 
 impl PreparedBuild {
@@ -69,7 +69,7 @@ impl PreparedBuild {
             profile.effective_tag(tag, active_host.as_deref(), base_image_sel.as_deref());
         let image_name = project::get_project_name(project_dir)?;
         let image_ref = format!("localhost/{}:{}", image_name, image_tag);
-        let storage = StorageOptions::prepare(profile.build_storage)?;
+        let storage = PodmanStorageOptions::prepare(profile.build_storage);
         Ok(Self {
             profile,
             active_host,
