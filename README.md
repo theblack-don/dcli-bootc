@@ -667,6 +667,43 @@ declared in your modules is actually installed (and that every removed
 package is gone). If anything is off, it tells you exactly what and does
 **not** offer to switch to that image.
 
+### Build storage
+
+`build` and `update` default to `build_storage: optimized`. On the machine
+running the build, dcli-bootc checks rootful Podman storage before generating
+files, checking the registry, or pulling the base image. With the `overlay`
+driver, it requires **metacopy disabled and native overlay diff enabled** to
+avoid slow layer exports. If the storage already meets these requirements,
+the build uses its existing settings.
+
+When metacopy is active, dcli-bootc prepares `metacopy=off` for the build,
+preserving the other driver options and all additional image stores. A second
+`podman info` verifies native diff and unchanged storage identity before the
+build starts. These global Podman options apply only to `podman build`;
+other Podman commands and persistent storage configuration keep their settings.
+There is no automatic fallback or retry. Unsupported or ambiguous storage
+information, changed storage, or unavailable native diff stops the command
+early with an error.
+
+To explicitly use the system Podman settings instead, set:
+
+```yaml
+# profile.yaml
+build_storage: system  # Skip optimization checks; builds may be slow.
+```
+
+The default is `optimized` when omitted. A host file can override the profile
+in either direction; omitting the host setting inherits the profile:
+
+```yaml
+# hosts/laptop.yaml
+build_storage: optimized
+```
+
+This setting controls storage on the **build machine**, including when
+building for another host. Other storage drivers keep their existing
+behavior and report that the overlay diff check does not apply.
+
 ### Cache safety
 
 The whole customization runs as a single `RUN` layer with the build files

@@ -30,6 +30,10 @@ exclude_modules: []
 # Optional package manager override (dnf, apt, zypper, pacman)
 # package_manager: apt
 
+# Optional build storage override (optimized or system).
+# Applies to Podman on the machine running this build.
+# build_storage: system
+
 # RakuOS only: override the profile's overlay_module so this machine
 # reconciles its live usr-overlay against its own module. Keep overlay
 # modules out of `modules:` above — they are rum-managed, not image-baked.

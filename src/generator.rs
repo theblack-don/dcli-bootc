@@ -774,6 +774,7 @@ mod tests {
             default_tag: "latest".to_string(),
             enabled_modules: vec![],
             package_manager: PackageManager::Dnf,
+            build_storage: crate::config::BuildStorage::default(),
             dotfiles: vec![],
             overlay_module: overlay_module.map(str::to_string),
             overlay_backend: backend,

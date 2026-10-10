@@ -4,6 +4,10 @@ nvidia_base_image: ghcr.io/ublue-os/bazzite-nvidia-open:stable
 default_tag: latest
 package_manager: dnf
 
+# Require native overlay diff with metacopy disabled (default).
+# Use system to explicitly keep the system Podman settings, which may be slow.
+build_storage: optimized
+
 enabled_modules:
   - base
 

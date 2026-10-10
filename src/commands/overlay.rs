@@ -1180,6 +1180,7 @@ mod tests {
             default_tag: "latest".to_string(),
             enabled_modules: Vec::new(),
             package_manager: config::PackageManager::default(),
+            build_storage: crate::config::BuildStorage::default(),
             dotfiles: Vec::new(),
             overlay_module: module.map(str::to_string),
             overlay_backend: config::OverlayBackend::default(),
